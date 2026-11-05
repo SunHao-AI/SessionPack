@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from sessionpack import catalog
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
@@ -168,4 +170,61 @@ def test_import_never_modifies_source_tree(memory_tree: Path, tmp_path: Path) ->
     before = _snapshot(memory_tree)
     import_source(TraeMemoryAdapter(), memory_tree, tmp_path / "catalog.sqlite")
     assert _snapshot(memory_tree) == before
+
+
+def test_midfile_oserror_not_marked_done(
+    memory_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "catalog.sqlite"
+    failing = next(memory_tree.glob("projects/*/20260102/session_memory_*.jsonl"))
+    rel = failing.relative_to(memory_tree).as_posix()
+    real_read = TraeMemoryAdapter.read_file
+    boom = {"armed": True}
+
+    def flaky(
+        self: TraeMemoryAdapter, ref, start_offset: int = 0, start_seq: int = 0
+    ):
+        for item in real_read(self, ref, start_offset, start_seq):
+            yield item
+            if boom["armed"] and ref.path == failing:
+                raise OSError("simulated mid-read failure")
+
+    monkeypatch.setattr(TraeMemoryAdapter, "read_file", flaky)
+    first = import_source(TraeMemoryAdapter(), memory_tree, db)
+
+    assert any(rel in failure for failure in first.failures)
+    conn = catalog.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM import_files WHERE path=?", (str(failing),)
+        ).fetchone()
+        mid_counts = catalog.stats(conn)
+    finally:
+        conn.close()
+    assert row["done"] == 0
+    assert 0 < row["offset"] < failing.stat().st_size
+    assert "simulated mid-read failure" in (row["error"] or "")
+    assert mid_counts["messages"] == 3
+
+    boom["armed"] = False
+    again = import_source(TraeMemoryAdapter(), memory_tree, db)
+
+    assert again.messages_inserted == 1
+    conn = catalog.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM import_files WHERE path=?", (str(failing),)
+        ).fetchone()
+        assert catalog.stats(conn) == {
+            "projects": 2, "sessions": 2, "messages": 4, "fts_rows": 4,
+        }
+        rows = conn.execute(
+            "SELECT message_id, seq FROM messages WHERE session_id=? ORDER BY seq",
+            ("b" * 24,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert row["done"] == 1
+    assert [tuple(r) for r in rows] == [("m1", 1), ("m2", 2)]
+
 

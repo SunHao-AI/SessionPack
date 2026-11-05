@@ -257,12 +257,13 @@ def import_source(
             dirty.add(key)
             if len(stats.failures) < MAX_FAILURES:
                 stats.failures.append(f"{state.rel}: {str(exc)[:60]}")
-        if stop:
-            stats.stopped = True
-            commit()
-            break
-        state.done = True
-        state.dirty = True
+        else:
+            if stop:
+                stats.stopped = True
+                commit()
+                break
+            state.done = True
+            state.dirty = True
         dirty.add(key)
         stats.files_processed += 1
 
