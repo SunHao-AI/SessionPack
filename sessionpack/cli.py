@@ -159,6 +159,9 @@ def _cmd_import(args) -> int:
             print("归档校验失败: " + ", ".join(issue.code for issue in exc.issues),
                   file=sys.stderr)
             return EXIT_VERIFY
+        except sqlite3.Error as exc:
+            print(f"数据库错误: {exc}", file=sys.stderr)
+            return EXIT_ERROR
         finally:
             conn.close()
         print(f"归档 {result.archive_id}：会话 {result.sessions}，消息 {result.messages}，"
@@ -174,18 +177,22 @@ def _cmd_import(args) -> int:
     kwargs = dict(reparse=args.reparse, retry_failed=args.retry_failed,
                   project_filter=args.project,
                   since=args.since, until=args.until)
-    if args.audit:
-        with ReadAudit(root, declared) as audit:
+    try:
+        if args.audit:
+            with ReadAudit(root, declared) as audit:
+                stats = importer.import_source(adapter, root, layout.catalog, **kwargs)
+            try:
+                audit.check(declared)
+            except ReadBoundaryError as exc:
+                print(str(exc), file=sys.stderr)
+                return EXIT_ERROR
+            if not args.json:
+                print(f"读取边界：审计通过（打开 {len(audit.opened)} 个文件）")
+        else:
             stats = importer.import_source(adapter, root, layout.catalog, **kwargs)
-        try:
-            audit.check(declared)
-        except ReadBoundaryError as exc:
-            print(str(exc), file=sys.stderr)
-            return EXIT_ERROR
-        if not args.json:
-            print(f"读取边界：审计通过（打开 {len(audit.opened)} 个文件）")
-    else:
-        stats = importer.import_source(adapter, root, layout.catalog, **kwargs)
+    except sqlite3.Error as exc:
+        print(f"数据库错误: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
     if args.json:
         print(json.dumps(stats.as_dict(), ensure_ascii=False, indent=2))
@@ -232,7 +239,7 @@ def _cmd_export(args) -> int:
             return EXIT_OK
         if args.session:
             try:
-                path = export.export_session(conn, args.session, out, args.format)
+                path, _ = export.export_session(conn, args.session, out, args.format)
             except KeyError:
                 print(f"会话不存在: {args.session}", file=sys.stderr)
                 return EXIT_USAGE
@@ -249,6 +256,9 @@ def _cmd_export(args) -> int:
         return EXIT_OK
     except ValueError as exc:
         print(f"导出失败: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except sqlite3.Error as exc:
+        print(f"数据库错误: {exc}", file=sys.stderr)
         return EXIT_ERROR
     finally:
         conn.close()

@@ -34,14 +34,20 @@ def extract_file_mentions(texts: list[str]) -> list[str]:
 def build_summary(session: dict, messages: list[dict]) -> dict:
     learned: list[str] = []
     actions: list[str] = []
+    seen_learned: set[str] = set()
+    seen_actions: set[str] = set()
     latest_outcome = ""
     for message in messages:
         for item in split_list(message.get("learned")):
-            if item not in learned:
-                learned.append(item)
+            if item in seen_learned:
+                continue
+            seen_learned.add(item)
+            learned.append(item)
         for item in split_list(message.get("actions")):
-            if item not in actions:
-                actions.append(item)
+            if item in seen_actions:
+                continue
+            seen_actions.add(item)
+            actions.append(item)
         if message.get("outcome"):
             latest_outcome = message["outcome"]
     files = extract_file_mentions(actions + learned + [latest_outcome])

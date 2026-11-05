@@ -235,7 +235,7 @@ def list_sessions(
     date_from: str | None = None,
     date_to: str | None = None,
     q: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
 ) -> list[dict]:
     clauses: list[str] = []
     params: list[object] = []
@@ -273,8 +273,10 @@ def list_sessions(
     )
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY COALESCE(s.updated_at, s.created_at, '') DESC LIMIT ?"
-    params.append(limit)
+    sql += " ORDER BY COALESCE(s.updated_at, s.created_at, '') DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     return [dict(row) for row in conn.execute(sql, params)]
 
 

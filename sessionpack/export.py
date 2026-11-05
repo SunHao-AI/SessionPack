@@ -20,8 +20,11 @@ class ExportResult:
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
-    temp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(temp, path)
+    try:
+        temp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _message_payload(message: dict) -> dict:
@@ -51,7 +54,7 @@ def _render(session: dict, messages: list[dict], fmt: str) -> str:
 
 def export_session(
     conn: sqlite3.Connection, session_id: str, dest_dir: Path, fmt: str = "markdown"
-) -> Path:
+) -> tuple[Path, int]:
     if not catalog.SESSION_ID_RE.fullmatch(session_id):
         raise ValueError("非法会话 ID")
     session = catalog.get_session(conn, session_id)
@@ -61,7 +64,7 @@ def export_session(
     suffix = "json" if fmt == "json" else "md"
     path = Path(dest_dir) / f"{session_id}.{suffix}"
     _atomic_write(path, _render(session, messages, fmt))
-    return path
+    return path, len(messages)
 
 
 def _export_rows(conn: sqlite3.Connection, rows: list[dict], dest_dir: Path,
@@ -69,20 +72,21 @@ def _export_rows(conn: sqlite3.Connection, rows: list[dict], dest_dir: Path,
     paths: list[Path] = []
     messages = 0
     for row in rows:
-        paths.append(export_session(conn, row["session_id"], dest_dir, fmt))
-        messages += len(catalog.get_messages(conn, row["session_id"]))
+        path, count = export_session(conn, row["session_id"], dest_dir, fmt)
+        paths.append(path)
+        messages += count
     return ExportResult(tuple(paths), len(paths), messages)
 
 
 def export_project(
     conn: sqlite3.Connection, project_id: str, dest_dir: Path, fmt: str = "markdown"
 ) -> ExportResult:
-    rows = catalog.list_sessions(conn, project_id=project_id, limit=100000)
+    rows = catalog.list_sessions(conn, project_id=project_id, limit=None)
     return _export_rows(conn, rows, dest_dir, fmt)
 
 
 def export_all(
     conn: sqlite3.Connection, dest_dir: Path, fmt: str = "markdown"
 ) -> ExportResult:
-    rows = catalog.list_sessions(conn, limit=100000)
+    rows = catalog.list_sessions(conn, limit=None)
     return _export_rows(conn, rows, dest_dir, fmt)

@@ -80,8 +80,8 @@ def test_extract_file_mentions_strips_dotdot() -> None:
 def test_export_session_writes_markdown_and_json(filled_db: Path, tmp_path: Path) -> None:
     conn = catalog.connect(filled_db)
     out = tmp_path / "out"
-    md = export.export_session(conn, "a" * 24, out, "markdown")
-    js = export.export_session(conn, "a" * 24, out, "json")
+    md, _ = export.export_session(conn, "a" * 24, out, "markdown")
+    js, _ = export.export_session(conn, "a" * 24, out, "json")
     assert md.name == "a" * 24 + ".md"
     assert "实现归档包的校验流程" in md.read_text(encoding="utf-8")
     payload = json.loads(js.read_text(encoding="utf-8"))
@@ -110,3 +110,25 @@ def test_export_rejects_illegal_session_id(filled_db: Path, tmp_path: Path) -> N
     conn = catalog.connect(filled_db)
     with pytest.raises(ValueError):
         export.export_session(conn, "../../escape", tmp_path / "out")
+
+
+def test_export_session_returns_path_and_count(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    path, count = export.export_session(conn, "a" * 24, tmp_path / "out", "json")
+    assert path.name == "a" * 24 + ".json"
+    assert count == 2
+
+
+def test_export_all_no_limit(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    result = export.export_all(conn, tmp_path / "all")
+    assert result.sessions == catalog.stats(conn)["sessions"]
+
+
+def test_build_summary_dedupes_learned(filled_db: Path) -> None:
+    conn = catalog.connect(filled_db)
+    session = catalog.get_session(conn, "a" * 24)
+    messages = catalog.get_messages(conn, "a" * 24)
+    data = summary.build_summary(session, messages)
+    learned = data["learned"]
+    assert len(learned) == len(set(learned))
