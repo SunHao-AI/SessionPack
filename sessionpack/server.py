@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import secrets
 import threading
 import webbrowser
@@ -15,7 +14,7 @@ from sessionpack.paths import default_memory_root, ensure_layout
 from sessionpack.summary import build_summary
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+SESSION_ID_RE = catalog.SESSION_ID_RE
 PAGES = {"/": "index.html", "/session": "session.html", "/diagnostics": "diagnostics.html"}
 STATIC = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),

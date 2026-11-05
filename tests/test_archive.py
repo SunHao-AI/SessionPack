@@ -1,3 +1,4 @@
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -8,12 +9,44 @@ from sessionpack import archive, catalog
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 
+SID = "a" * 24
+META_NAME = f"sessions/{SID}/meta.json"
+NDJSON_NAME = f"sessions/{SID}/messages.ndjson"
+
 
 @pytest.fixture
 def filled_db(memory_tree: Path, tmp_path: Path) -> Path:
     db = tmp_path / "catalog.sqlite"
     import_source(TraeMemoryAdapter(), memory_tree, db)
     return db
+
+
+def _rebuild(src: Path, dst: Path, mutate: dict[str, bytes] | None = None,
+             drop: set[str] | None = None) -> None:
+    """删改成员后重算 manifest 哈希与 archive_id，使 verify 仍然通过。"""
+    with zipfile.ZipFile(src) as zin:
+        payload = {name: zin.read(name) for name in zin.namelist()}
+    for name in drop or ():
+        payload.pop(name)
+    payload.update(mutate or {})
+    manifest = json.loads(payload["manifest.json"])
+    manifest["files"] = [e for e in manifest["files"] if e["path"] in payload]
+    for entry in manifest["files"]:
+        data = payload[entry["path"]]
+        entry["sha256"] = hashlib.sha256(data).hexdigest()
+        entry["size"] = len(data)
+    manifest["archive_id"] = archive.compute_archive_id(manifest["files"])
+    payload["manifest.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    with zipfile.ZipFile(dst, "w") as zout:
+        for name, data in payload.items():
+            zout.writestr(name, data)
+
+
+def _running_runs(conn) -> list[str]:
+    return [row["result"] for row in
+            conn.execute("SELECT result FROM import_runs WHERE result='running'")]
 
 
 def _rewrite(src: Path, dst: Path, mutate: dict[str, bytes] | None = None,
@@ -147,6 +180,76 @@ def test_import_archive_refreshes_content_hash(filled_db: Path, tmp_path: Path) 
     assert rows and all(row["content_hash"] for row in rows)
     imported = dict((row["session_id"], row["content_hash"]) for row in rows)
     assert imported["a" * 24] == source_hash
+
+
+def test_verify_accepts_hostile_session_id_but_import_rejects(
+    filled_db: Path, tmp_path: Path
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "hostile.zip"
+    with zipfile.ZipFile(built.path) as zf:
+        meta = json.loads(zf.read(META_NAME))
+    meta["session_id"] = "../../../../escape"
+    _rebuild(built.path, bad, mutate={META_NAME: json.dumps(meta).encode("utf-8")})
+    assert archive.verify_archive(bad).ok is True
+
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError) as exc:
+        archive.import_archive(fresh, bad)
+    assert "E_SESSION_ID" in {issue.code for issue in exc.value.issues}
+    assert _running_runs(fresh) == []
+    assert fresh.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert list(tmp_path.parent.glob("escape*")) == []
+    assert list(tmp_path.parent.glob("*escape*")) == []
+
+
+def test_verify_detects_missing_messages_ndjson(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    _rebuild(built.path, bad, drop={NDJSON_NAME})
+    result = archive.verify_archive(bad)
+    assert result.ok is False
+    assert "E_SESSION_INCOMPLETE" in {issue.code for issue in result.issues}
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(fresh, bad)
+    assert _running_runs(fresh) == []
+
+
+def test_verify_detects_corrupt_ndjson_line(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    _rebuild(built.path, bad, mutate={NDJSON_NAME: b'{"message_id": "m1"}\nnot json\n'})
+    result = archive.verify_archive(bad)
+    assert result.ok is False
+    assert "E_NDJSON_INVALID" in {issue.code for issue in result.issues}
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(fresh, bad)
+    assert _running_runs(fresh) == []
+
+
+def test_import_marks_run_failed_on_unexpected_error(
+    filled_db: Path, tmp_path: Path
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    _rebuild(built.path, bad, mutate={NDJSON_NAME: b'{"seq": 1}\n'})
+    assert archive.verify_archive(bad).ok is True
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(fresh, bad)
+    rows = fresh.execute("SELECT result FROM import_runs").fetchall()
+    assert rows and all(row["result"] == "failed" for row in rows)
+    assert _running_runs(fresh) == []
 
 
 def test_build_failure_leaves_no_temp_file(

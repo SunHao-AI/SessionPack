@@ -39,6 +39,7 @@ def collect(memory_root: Path, layout: Layout) -> dict:
         "catalog": {
             "path": str(layout.catalog),
             "exists": layout.catalog.is_file(),
+            "ready": False,
             "stats": {"projects": 0, "sessions": 0, "messages": 0, "fts_rows": 0},
             "tokenizer": "none",
         },
@@ -47,8 +48,12 @@ def collect(memory_root: Path, layout: Layout) -> dict:
     if layout.catalog.is_file():
         conn = catalog.connect(layout.catalog)
         try:
-            result["catalog"]["stats"] = catalog.stats(conn)
-            result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)
+            if catalog.has_schema(conn):
+                result["catalog"]["ready"] = True
+                result["catalog"]["stats"] = catalog.stats(conn)
+                result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)
+            else:
+                result["warnings"].append("索引未初始化，请重新运行 import")
         finally:
             conn.close()
     return result

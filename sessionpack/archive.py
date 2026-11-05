@@ -217,6 +217,18 @@ def build_archive(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _invalid_json_line(bundle: zipfile.ZipFile, name: str) -> int | None:
+    with bundle.open(name) as handle:
+        for number, raw in enumerate(handle, start=1):
+            if not raw.strip():
+                continue
+            try:
+                json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return number
+    return None
+
+
 def verify_archive(path: Path) -> VerifyResult:
     path = Path(path)
     try:
@@ -249,6 +261,7 @@ def verify_archive(path: Path) -> VerifyResult:
             issues.append(VerifyIssue("E_MANIFEST_INVALID", "files 为空"))
             files = []
         seen: set[str] = set()
+        verified: set[str] = set()
         for entry in files:
             name = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(name, str) or _unsafe_member(name):
@@ -265,8 +278,21 @@ def verify_archive(path: Path) -> VerifyResult:
                 digest = _sha256_stream(handle)
             if digest != entry.get("sha256"):
                 issues.append(VerifyIssue("E_HASH_MISMATCH", name))
+            else:
+                verified.add(name)
         for name in sorted(set(names) - seen - {MANIFEST_NAME}):
             issues.append(VerifyIssue("E_UNREGISTERED_FILE", name))
+        for name in sorted(seen):
+            if not name.endswith("/meta.json"):
+                continue
+            sibling = name[: -len("meta.json")] + "messages.ndjson"
+            if sibling not in seen:
+                issues.append(VerifyIssue("E_SESSION_INCOMPLETE", name))
+                continue
+            if sibling in verified:
+                bad_line = _invalid_json_line(bundle, sibling)
+                if bad_line is not None:
+                    issues.append(VerifyIssue("E_NDJSON_INVALID", f"{sibling}:{bad_line}"))
         if not issues and manifest.get("archive_id") != compute_archive_id(files):
             issues.append(VerifyIssue("E_ARCHIVE_ID_MISMATCH", "archive_id 不可复现"))
     return VerifyResult(path, not issues, tuple(issues), manifest)
@@ -279,6 +305,23 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
         raise ArchiveError(result.issues)
     manifest = result.manifest
     project = manifest["project"]
+    metas: list[tuple[str, dict]] = []
+    illegal: list[VerifyIssue] = []
+    with zipfile.ZipFile(path) as bundle:
+        for entry in manifest["files"]:
+            name = entry["path"]
+            if not name.endswith("/meta.json"):
+                continue
+            meta = json.loads(bundle.read(name).decode("utf-8"))
+            session_id = meta.get("session_id")
+            if not isinstance(session_id, str) or not catalog.SESSION_ID_RE.match(
+                session_id
+            ):
+                illegal.append(VerifyIssue("E_SESSION_ID", name))
+                continue
+            metas.append((name, meta))
+    if illegal:
+        raise ArchiveError(illegal)
     catalog.upsert_project(conn, ProjectRecord(
         project_id=project["project_id"],
         display_name=project.get("display_name") or project["project_id"],
@@ -292,59 +335,72 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
         (run_id, f"archive:{manifest['archive_id']}", manifest["format_version"],
          datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "running"),
     )
-    sessions = messages = created = inserted = 0
-    touched: set[str] = set()
-    with zipfile.ZipFile(path) as bundle:
-        for entry in manifest["files"]:
-            name = entry["path"]
-            if not name.endswith("/meta.json"):
-                continue
-            session_dir = name.rsplit("/", 1)[0]
-            meta = json.loads(bundle.read(name).decode("utf-8"))
-            session_id = meta["session_id"]
-            touched.add(session_id)
-            summary = meta.get("summary") or meta.get("title") or ""
-            if summary:
-                outcome = catalog.upsert_topic(conn, TopicRecord(
-                    session_id=session_id,
-                    topic_time=meta.get("updated_at") or meta.get("created_at") or "",
-                    body=summary,
-                    project_id=meta["project_id"],
-                    source_kind=meta.get("source_kind") or "archive",
-                ))
-                created += int(outcome.session_created)
-            sessions += 1
-            rows = bundle.read(f"{session_dir}/messages.ndjson").decode("utf-8")
-            for line in rows.splitlines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                outcome = catalog.upsert_message(conn, MessageRecord(
-                    session_id=session_id,
-                    message_id=payload["message_id"],
-                    seq=int(payload.get("seq") or 0),
-                    ts=payload.get("ts"),
-                    intent=payload.get("intent"),
-                    outcome=payload.get("outcome"),
-                    actions=tuple(payload.get("actions") or ()),
-                    learned=tuple(payload.get("learned") or ()),
-                    meta=payload.get("meta"),
-                    body=payload.get("body") or "",
-                    project_id=meta["project_id"],
-                    source_kind=meta.get("source_kind") or "archive",
-                ))
-                inserted += int(outcome.inserted)
-                created += int(outcome.session_created)
-                messages += 1
-    if touched:
-        catalog.refresh_session_hashes(conn, touched)
-    conn.execute(
-        "UPDATE import_runs SET finished_at=?, result=?, scanned_files=?,"
-        " imported_rows=?, failed_rows=? WHERE run_id=?",
-        (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "ok",
-         len(manifest["files"]), inserted, 0, run_id),
-    )
     conn.commit()
+    current = MANIFEST_NAME
+    try:
+        sessions = messages = created = inserted = 0
+        touched: set[str] = set()
+        with zipfile.ZipFile(path) as bundle:
+            for name, meta in metas:
+                current = name
+                session_id = meta["session_id"]
+                session_dir = name.rsplit("/", 1)[0]
+                touched.add(session_id)
+                summary = meta.get("summary") or meta.get("title") or ""
+                if summary:
+                    outcome = catalog.upsert_topic(conn, TopicRecord(
+                        session_id=session_id,
+                        topic_time=meta.get("updated_at") or meta.get("created_at") or "",
+                        body=summary,
+                        project_id=meta["project_id"],
+                        source_kind=meta.get("source_kind") or "archive",
+                    ))
+                    created += int(outcome.session_created)
+                sessions += 1
+                current = f"{session_dir}/messages.ndjson"
+                rows = bundle.read(current).decode("utf-8")
+                for line in rows.splitlines():
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line)
+                    outcome = catalog.upsert_message(conn, MessageRecord(
+                        session_id=session_id,
+                        message_id=payload["message_id"],
+                        seq=int(payload.get("seq") or 0),
+                        ts=payload.get("ts"),
+                        intent=payload.get("intent"),
+                        outcome=payload.get("outcome"),
+                        actions=tuple(payload.get("actions") or ()),
+                        learned=tuple(payload.get("learned") or ()),
+                        meta=payload.get("meta"),
+                        body=payload.get("body") or "",
+                        project_id=meta["project_id"],
+                        source_kind=meta.get("source_kind") or "archive",
+                    ))
+                    inserted += int(outcome.inserted)
+                    created += int(outcome.session_created)
+                    messages += 1
+        if touched:
+            catalog.refresh_session_hashes(conn, touched)
+        conn.execute(
+            "UPDATE import_runs SET finished_at=?, result=?, scanned_files=?,"
+            " imported_rows=?, failed_rows=? WHERE run_id=?",
+            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "ok",
+             len(manifest["files"]), inserted, 0, run_id),
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        conn.execute(
+            "UPDATE import_runs SET finished_at=?, result=?, warnings_json=?"
+            " WHERE run_id=?",
+            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "failed",
+             json.dumps({"error": f"{current}: {str(exc)[:60]}"}, ensure_ascii=False),
+             run_id),
+        )
+        conn.commit()
+        raise ArchiveError(
+            [VerifyIssue("E_IMPORT_FAILED", f"{current}: {str(exc)[:60]}")]) from exc
     return ArchiveImportResult(
         archive_id=manifest["archive_id"],
         sessions=sessions,

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import NamedTuple
 
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
+
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -89,6 +92,13 @@ def init_schema(conn: sqlite3.Connection) -> str:
     )
     conn.commit()
     return tokenizer_of(conn)
+
+
+def has_schema(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='projects'"
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def tokenizer_of(conn: sqlite3.Connection) -> str:

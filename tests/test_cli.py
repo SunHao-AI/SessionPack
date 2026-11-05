@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from sessionpack import catalog
+from sessionpack import catalog, cli
 from sessionpack.cli import main
 
 
@@ -123,3 +123,58 @@ def test_serve_without_catalog_returns_two(tmp_path: Path, capsys) -> None:
     code = main(["serve", "--data-dir", str(tmp_path / "empty")])
     assert code == 2
     assert "请先运行" in capsys.readouterr().err
+
+
+def test_export_without_schema_catalog_returns_two(tmp_path: Path, capsys) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "catalog.sqlite").write_bytes(b"")
+    code = main(["export", "--data-dir", str(data_dir), "--all",
+                 "--out", str(tmp_path / "out")])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "请先运行" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_serve_without_schema_catalog_returns_two(tmp_path: Path, capsys,
+                                                 monkeypatch) -> None:
+    from sessionpack import server
+
+    calls: list[object] = []
+    monkeypatch.setattr(server, "serve", lambda *a, **k: calls.append(a))
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "catalog.sqlite").write_bytes(b"")
+    code = main(["serve", "--data-dir", str(data_dir)])
+    assert code == 2
+    assert calls == []
+    captured = capsys.readouterr()
+    assert "请先运行" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_doctor_tolerates_schema_less_catalog(memory_tree: Path, tmp_path: Path,
+                                             capsys) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "catalog.sqlite").write_bytes(b"")
+    code = main(["doctor", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_dir)])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "索引未初始化" in captured.out
+
+
+def test_main_falls_back_on_unexpected_error(memory_tree: Path, tmp_path: Path,
+                                             monkeypatch, capsys) -> None:
+    def boom(args):
+        raise RuntimeError("意外崩溃")
+
+    monkeypatch.setattr(cli, "_cmd_scan", boom)
+    code = main(["scan", "--memory-root", str(memory_tree)])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("错误: ")
+    assert "Traceback" not in captured.err

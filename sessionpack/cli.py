@@ -24,6 +24,16 @@ def _memory_root(args) -> Path:
     return Path(args.memory_root) if args.memory_root else default_memory_root()
 
 
+def _catalog_ready(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    conn = catalog.connect(path)
+    try:
+        return catalog.has_schema(conn)
+    finally:
+        conn.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sessionpack",
                                      description="Trae 会话归档与同步：本地只读管理")
@@ -100,8 +110,11 @@ def _cmd_doctor(args) -> int:
         print(f"私有库：{private['path']}"
               f"（{'存在' if private['exists'] else '不存在'}，"
               f"{private['size']} 字节，不读取）")
-        print(f"索引：{data['catalog']['path']}"
-              f"（{'存在' if data['catalog']['exists'] else '未创建'}）")
+        catalog_info = data["catalog"]
+        state = "未创建"
+        if catalog_info["exists"]:
+            state = "存在" if catalog_info["ready"] else "存在，索引未初始化"
+        print(f"索引：{catalog_info['path']}（{state}）")
         stats = data["catalog"]["stats"]
         print(f"索引统计：项目 {stats['projects']}，会话 {stats['sessions']}，"
               f"消息 {stats['messages']}，FTS {stats['fts_rows']}")
@@ -177,7 +190,7 @@ def _cmd_import(args) -> int:
 
 def _cmd_serve(args) -> int:
     layout = _layout(args)
-    if not layout.catalog.is_file():
+    if not _catalog_ready(layout.catalog):
         print("索引不存在，请先运行 sessionpack import", file=sys.stderr)
         return EXIT_USAGE
     from sessionpack.server import serve
@@ -189,7 +202,7 @@ def _cmd_serve(args) -> int:
 
 def _cmd_export(args) -> int:
     layout = _layout(args)
-    if not layout.catalog.is_file():
+    if not _catalog_ready(layout.catalog):
         print("索引不存在，请先运行 sessionpack import", file=sys.stderr)
         return EXIT_USAGE
     conn = catalog.connect(layout.catalog)
@@ -252,7 +265,11 @@ def _cmd_verify(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":

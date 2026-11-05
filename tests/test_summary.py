@@ -97,3 +97,9 @@ def test_export_unknown_session_raises(filled_db: Path, tmp_path: Path) -> None:
     conn = catalog.connect(filled_db)
     with pytest.raises(KeyError):
         export.export_session(conn, "f" * 24, tmp_path / "out")
+
+
+def test_export_rejects_illegal_session_id(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    with pytest.raises(ValueError):
+        export.export_session(conn, "../../escape", tmp_path / "out")
