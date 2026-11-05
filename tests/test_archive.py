@@ -109,3 +109,58 @@ def test_import_refuses_tampered_archive(filled_db: Path, tmp_path: Path) -> Non
     catalog.init_schema(fresh)
     with pytest.raises(archive.ArchiveError):
         archive.import_archive(fresh, bad)
+
+
+def test_verify_rejects_degenerate_manifest(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    _rewrite(built.path, bad, mutate={"manifest.json": b"null"})
+    result = archive.verify_archive(bad)
+    assert result.ok is False
+    assert "E_MANIFEST_INVALID" in {issue.code for issue in result.issues}
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(catalog.connect(tmp_path / "fresh.sqlite"), bad)
+
+
+def test_build_archive_uses_lf_newlines(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    with zipfile.ZipFile(built.path) as zf:
+        payloads = {name: zf.read(name) for name in zf.namelist()}
+    assert "manifest.json" in payloads
+    for name, data in payloads.items():
+        assert b"\r\n" not in data, name
+
+
+def test_import_archive_refreshes_content_hash(filled_db: Path, tmp_path: Path) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    source_hash = conn.execute(
+        "SELECT content_hash FROM sessions WHERE session_id=?", ("a" * 24,)
+    ).fetchone()[0]
+    assert source_hash
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    archive.import_archive(fresh, built.path)
+    rows = fresh.execute("SELECT session_id, content_hash FROM sessions").fetchall()
+    assert rows and all(row["content_hash"] for row in rows)
+    imported = dict((row["session_id"], row["content_hash"]) for row in rows)
+    assert imported["a" * 24] == source_hash
+
+
+def test_build_failure_leaves_no_temp_file(
+    filled_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = catalog.connect(filled_db)
+    out_dir = tmp_path / "archives"
+    monkeypatch.setattr(
+        archive, "verify_archive",
+        lambda path: archive.VerifyResult(Path(path), False,
+                                          (archive.VerifyIssue("E_STUB", "stub"),), None),
+    )
+    with pytest.raises(archive.ArchiveError):
+        archive.build_archive(conn, out_dir, "-d-Work-RepoA")
+    assert [p.name for p in out_dir.iterdir()] == []
+    assert list(out_dir.glob(".tmp-*.zip")) == []
+
