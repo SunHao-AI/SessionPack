@@ -1,0 +1,21 @@
+# 依赖与虚拟环境
+node_modules/
+.venv/
+*.egg-info/
+
+# 缓存与临时文件
+__pycache__/
+*.pyc
+.pytest_cache/
+.scratch/
+.screenshots/
+.tmp/
+*.log
+
+# 构建产物
+dist/
+build/
+
+# 本地配置与凭据
+.env
+*.local
