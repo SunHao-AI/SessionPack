@@ -15,7 +15,10 @@
   }
 
   function link(path) {
-    return token ? path + "?token=" + encodeURIComponent(token) : path;
+    if (!token) return path;
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set("token", token);
+    return url.pathname + url.search;
   }
 
   async function initIndex() {

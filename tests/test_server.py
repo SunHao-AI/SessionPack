@@ -54,12 +54,20 @@ def test_api_lists_sessions_with_header_token(base_url: str) -> None:
 
 
 def test_api_accepts_query_token(base_url: str) -> None:
-    status, body = _get(base_url + "/api/sessions?token=test-token&q="
-                        + urllib.parse.quote("归档"))
+    query = urllib.parse.quote("归档")
+    status, body = _get(base_url + f"/api/sessions?token=test-token&q={query}")
     data = json.loads(body)
     assert status == 200
     assert len(data["sessions"]) == 1
     assert data["sessions"][0]["session_id"] == "a" * 24
+
+
+def test_non_ascii_token_returns_403(base_url: str) -> None:
+    request = urllib.request.Request(base_url + "/api/sessions",
+                                     headers={"X-Token": "é"})
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request)
+    assert excinfo.value.code == 403
 
 
 def test_session_api_returns_summary_and_messages(base_url: str) -> None:

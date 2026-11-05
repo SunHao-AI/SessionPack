@@ -56,7 +56,11 @@ def create_server(
 
         def _authorized(self, query: dict) -> bool:
             supplied = self.headers.get("X-Token") or (query.get("token") or [""])[0]
-            return secrets.compare_digest(supplied, actual_token)
+            try:
+                return secrets.compare_digest(supplied, actual_token)
+            except TypeError:
+                # compare_digest 拒绝含非 ASCII 的 str；按未授权处理而非崩溃
+                return False
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
