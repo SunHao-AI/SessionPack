@@ -160,7 +160,8 @@ def upsert_message(conn: sqlite3.Connection, rec: MessageRecord) -> WriteResult:
         )
     else:
         conn.execute(
-            "UPDATE sessions SET project_id=?, updated_at=MAX(COALESCE(updated_at,''), ?)"
+            "UPDATE sessions SET project_id=?,"
+            " updated_at=MAX(COALESCE(updated_at,''), COALESCE(?, ''))"
             " WHERE session_id=?",
             (rec.project_id, rec.ts, rec.session_id),
         )

@@ -84,6 +84,14 @@ def test_refresh_session_hashes_is_stable(tmp_path: Path) -> None:
     assert len(first) == 64
 
 
+def test_upsert_message_null_ts_keeps_updated_at(tmp_path: Path) -> None:
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, _msg("正文一", "m1", 1))
+    catalog.upsert_message(conn, _msg("正文二", "m2", 2, ts=None))
+    assert catalog.get_session(conn, "a" * 24)["updated_at"] == "2026-01-01 10:00:00"
+
+
 def test_stats_returns_all_counts(tmp_path: Path) -> None:
     conn = catalog.connect(tmp_path / "catalog.sqlite")
     catalog.init_schema(conn)
