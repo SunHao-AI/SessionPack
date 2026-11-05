@@ -1950,10 +1950,11 @@ def build_archive(
             }
             meta_path = session_dir / "meta.json"
             meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8", newline="\n",
             )
             messages_path = session_dir / "messages.ndjson"
-            with messages_path.open("w", encoding="utf-8") as handle:
+            with messages_path.open("w", encoding="utf-8", newline="\n") as handle:
                 for row in messages:
                     payload = {
                         "message_id": row["message_id"],
@@ -1991,7 +1992,8 @@ def build_archive(
             "files": sorted(entries, key=lambda item: item["path"]),
         }
         (work / MANIFEST_NAME).write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8", newline="\n",
         )
         temp_zip = out_dir / f".tmp-{archive_id[:12]}.zip"
         with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as bundle:
@@ -2000,9 +2002,14 @@ def build_archive(
             bundle.write(work / MANIFEST_NAME, MANIFEST_NAME)
         check = verify_archive(temp_zip)
         if not check.ok:
+            temp_zip.unlink(missing_ok=True)
             raise ArchiveError(check.issues)
         final = out_dir / f"{_slug(project_id)}-{created_at[:10]}-{archive_id[:12]}.zip"
-        os.replace(temp_zip, final)
+        try:
+            os.replace(temp_zip, final)
+        except OSError:
+            temp_zip.unlink(missing_ok=True)
+            raise
         return ArchiveResult(
             path=final,
             archive_id=archive_id,
@@ -2034,6 +2041,10 @@ def verify_archive(path: Path) -> VerifyResult:
         except (ValueError, UnicodeDecodeError) as exc:
             return VerifyResult(path, False,
                                 (VerifyIssue("E_MANIFEST_INVALID", str(exc)[:120]),), None)
+        if not isinstance(manifest, dict):
+            return VerifyResult(path, False,
+                                (VerifyIssue("E_MANIFEST_INVALID", "manifest 顶层必须是对象"),),
+                                None)
         if manifest.get("format") != FORMAT_NAME:
             issues.append(VerifyIssue("E_MANIFEST_INVALID", "format 不匹配"))
         if manifest.get("format_version") != FORMAT_VERSION:
@@ -2087,6 +2098,7 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
          datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "running"),
     )
     sessions = messages = created = inserted = 0
+    touched: set[str] = set()
     with zipfile.ZipFile(path) as bundle:
         for entry in manifest["files"]:
             name = entry["path"]
@@ -2095,6 +2107,7 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
             session_dir = name.rsplit("/", 1)[0]
             meta = json.loads(bundle.read(name).decode("utf-8"))
             session_id = meta["session_id"]
+            touched.add(session_id)
             summary = meta.get("summary") or meta.get("title") or ""
             if summary:
                 outcome = catalog.upsert_topic(conn, TopicRecord(
@@ -2128,6 +2141,8 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                 inserted += int(outcome.inserted)
                 created += int(outcome.session_created)
                 messages += 1
+    if touched:
+        catalog.refresh_session_hashes(conn, touched)
     conn.execute(
         "UPDATE import_runs SET finished_at=?, result=?, scanned_files=?,"
         " imported_rows=?, failed_rows=? WHERE run_id=?",
