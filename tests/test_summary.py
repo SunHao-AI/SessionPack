@@ -56,6 +56,20 @@ def test_summary_dedupes_learned_and_sorts_files() -> None:
     assert data["latest_outcome"] == "通过"
 
 
+def test_extract_file_mentions_strips_absolute_roots() -> None:
+    texts = [
+        r"改 E:\Workplace\SessionPack\sessionpack\summary.py",
+        "改 /home/dev/repo/main.py",
+        r"改 D:\repo\src\a.py 和 ./tools/b.py",
+    ]
+    assert summary.extract_file_mentions(texts) == [
+        "a.py",
+        "main.py",
+        "summary.py",
+        "tools/b.py",
+    ]
+
+
 def test_export_session_writes_markdown_and_json(filled_db: Path, tmp_path: Path) -> None:
     conn = catalog.connect(filled_db)
     out = tmp_path / "out"

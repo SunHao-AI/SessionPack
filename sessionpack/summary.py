@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 
 FILE_RE = re.compile(
-    r"[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|toml|ya?ml|css|html)\b",
+    r"(?:[A-Za-z]:[/\\])?[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|toml|ya?ml|css|html)\b",
     re.IGNORECASE,
 )
+
+ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|[/\\])")
 
 
 def split_list(value: str | None) -> list[str]:
@@ -19,7 +21,9 @@ def extract_file_mentions(texts: list[str]) -> list[str]:
     for text in texts:
         for match in FILE_RE.findall(text or ""):
             normalized = match.replace("\\", "/")
-            if normalized.startswith("./"):
+            if ABSOLUTE_RE.match(match):
+                normalized = normalized.rsplit("/", 1)[-1]
+            while normalized.startswith("./"):
                 normalized = normalized[2:]
             found.add(normalized)
     return sorted(found)
