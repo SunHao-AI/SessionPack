@@ -120,9 +120,18 @@
     } catch (error) {
       summaryBox.textContent = error.message;
     }
-    document.getElementById("copy").addEventListener("click", async () => {
+    const copyButton = document.getElementById("copy");
+    copyButton.addEventListener("click", async () => {
       const text = document.getElementById("summary").innerText;
-      await navigator.clipboard.writeText(text);
+      try {
+        await navigator.clipboard.writeText(text);
+        copyButton.textContent = "已复制";
+      } catch (error) {
+        copyButton.textContent = "复制失败";
+      }
+      setTimeout(() => {
+        copyButton.textContent = "复制摘要";
+      }, 1500);
     });
     const exportLink = (fmt) => {
       const a = document.createElement("a");
