@@ -3121,7 +3121,7 @@ git commit -m "feat: 实现六命令 CLI、读取边界审计与诊断"
 - Consumes: `catalog.connect/list_sessions/get_session/get_messages/get_projects`、`summary.build_summary`、`diagnostics.collect`、`paths.ensure_layout`。
 - Produces:
   - `server.create_server(catalog_path: Path, *, host: str = "127.0.0.1", port: int = 0, token: str | None = None, memory_root: Path | None = None) -> ThreadingHTTPServer`，返回对象带 `token` 属性
-  - `server.serve(catalog_path: Path, *, port: int = 8765, token: str | None = None, open_browser: bool = False) -> None`
+  - `server.serve(catalog_path: Path, *, port: int = 8765, token: str | None = None, open_browser: bool = False, memory_root: Path | None = None) -> None`
   - HTTP 路由：`/`、`/session`、`/diagnostics`、`/app.js`、`/style.css`、`/api/sessions`、`/api/sessions/<id>`、`/api/diagnostics`
 
 只绑定回环地址。`/api/*` 必须携带 token（`X-Token` 头或 `?token=`），页面与静态资源不校验。所有 HTML 内容通过 `textContent` 写入，不拼接 `innerHTML`。
@@ -3133,6 +3133,7 @@ git commit -m "feat: 实现六命令 CLI、读取边界审计与诊断"
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -3185,11 +3186,20 @@ def test_api_lists_sessions_with_header_token(base_url: str) -> None:
 
 
 def test_api_accepts_query_token(base_url: str) -> None:
-    status, body = _get(base_url + "/api/sessions?token=test-token&q=归档")
+    query = urllib.parse.quote("归档")
+    status, body = _get(base_url + f"/api/sessions?token=test-token&q={query}")
     data = json.loads(body)
     assert status == 200
     assert len(data["sessions"]) == 1
     assert data["sessions"][0]["session_id"] == "a" * 24
+
+
+def test_non_ascii_token_returns_403(base_url: str) -> None:
+    request = urllib.request.Request(base_url + "/api/sessions",
+                                     headers={"X-Token": "é"})
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request)
+    assert excinfo.value.code == 403
 
 
 def test_session_api_returns_summary_and_messages(base_url: str) -> None:
@@ -3295,7 +3305,11 @@ def create_server(
 
         def _authorized(self, query: dict) -> bool:
             supplied = self.headers.get("X-Token") or (query.get("token") or [""])[0]
-            return secrets.compare_digest(supplied, actual_token)
+            try:
+                return secrets.compare_digest(supplied, actual_token)
+            except TypeError:
+                # compare_digest 拒绝含非 ASCII 的 str；按未授权处理而非崩溃
+                return False
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -3483,7 +3497,10 @@ def serve(
   }
 
   function link(path) {
-    return token ? path + "?token=" + encodeURIComponent(token) : path;
+    if (!token) return path;
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set("token", token);
+    return url.pathname + url.search;
   }
 
   async function initIndex() {
@@ -3642,7 +3659,7 @@ pre {
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python -m pytest tests/test_server.py -v`
-Expected: 9 passed
+Expected: 10 passed
 
 - [ ] **Step 5: 提交**
 
