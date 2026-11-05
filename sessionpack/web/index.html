@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SessionPack · 会话</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>SessionPack</h1>
+    <nav><a href="/diagnostics" id="diag-link">诊断</a></nav>
+  </header>
+  <main>
+    <form id="search">
+      <input id="q" type="search" placeholder="输入关键词（≥3 字符走全文索引）">
+      <select id="project"><option value="">全部项目</option></select>
+      <button type="submit">检索</button>
+    </form>
+    <p id="status"></p>
+    <ul id="list"></ul>
+  </main>
+  <script src="/app.js"></script>
+  <script>SessionPack.initIndex();</script>
+</body>
+</html>

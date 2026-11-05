@@ -1,0 +1,48 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d1d1f;
+  --bg: #fbfbfd;
+  --muted: #6b6b70;
+  --line: #d8d8dd;
+  --accent: #0b6bcb;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #ececf1; --bg: #17171a; --muted: #a0a0a8; --line: #33333a; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto;
+  padding: 24px;
+  max-width: 880px;
+  font: 15px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+header { display: flex; align-items: center; justify-content: space-between; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 17px; margin: 24px 0 8px; }
+h3 { font-size: 14px; margin: 16px 0 4px; color: var(--muted); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+nav a { margin-left: 12px; }
+form { display: flex; gap: 8px; margin: 20px 0 8px; }
+input, select, button {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+input[type="search"] { flex: 1; }
+button { cursor: pointer; color: var(--accent); }
+#status, #list span { color: var(--muted); font-size: 13px; }
+ul, ol { padding-left: 20px; }
+li { margin: 6px 0; }
+pre {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: auto;
+  font-size: 12px;
+}

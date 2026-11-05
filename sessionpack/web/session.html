@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SessionPack · 会话详情</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1><a href="/">SessionPack</a></h1>
+    <nav><a href="/diagnostics" id="diag-link">诊断</a></nav>
+  </header>
+  <main>
+    <article id="summary"></article>
+    <section>
+      <h2>消息</h2>
+      <ol id="messages"></ol>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+  <script>SessionPack.initSession();</script>
+</body>
+</html>

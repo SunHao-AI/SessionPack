@@ -1,0 +1,98 @@
+import json
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.importer import import_source
+from sessionpack.server import create_server
+
+
+@pytest.fixture
+def base_url(memory_tree: Path, tmp_path: Path):
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    server = create_server(db, port=0, token="test-token", memory_root=memory_tree)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _get(url: str, token: str | None = None) -> tuple[int, bytes]:
+    request = urllib.request.Request(url)
+    if token:
+        request.add_header("X-Token", token)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.status, response.read()
+
+
+def test_server_binds_loopback(base_url: str) -> None:
+    assert base_url.startswith("http://127.0.0.1:")
+
+
+def test_api_requires_token(base_url: str) -> None:
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base_url + "/api/sessions")
+    assert exc.value.code == 403
+
+
+def test_api_lists_sessions_with_header_token(base_url: str) -> None:
+    status, body = _get(base_url + "/api/sessions", token="test-token")
+    data = json.loads(body)
+    assert status == 200
+    assert len(data["sessions"]) == 2
+    assert len(data["projects"]) == 2
+
+
+def test_api_accepts_query_token(base_url: str) -> None:
+    status, body = _get(base_url + "/api/sessions?token=test-token&q="
+                        + urllib.parse.quote("归档"))
+    data = json.loads(body)
+    assert status == 200
+    assert len(data["sessions"]) == 1
+    assert data["sessions"][0]["session_id"] == "a" * 24
+
+
+def test_session_api_returns_summary_and_messages(base_url: str) -> None:
+    status, body = _get(base_url + "/api/sessions/" + "a" * 24 + "?token=test-token")
+    data = json.loads(body)
+    assert status == 200
+    assert data["summary"]["session_id"] == "a" * 24
+    assert len(data["messages"]) == 2
+    assert "实现归档包的校验流程" in data["summary"]["title"]
+
+
+def test_session_api_rejects_bad_id(base_url: str) -> None:
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base_url + "/api/sessions/not-an-id?token=test-token")
+    assert exc.value.code == 404
+
+
+def test_diagnostics_api(base_url: str) -> None:
+    status, body = _get(base_url + "/api/diagnostics?token=test-token")
+    data = json.loads(body)
+    assert status == 200
+    assert data["adapter"]["id"] == "trae-cn-memory"
+    assert data["catalog"]["stats"]["messages"] == 4
+
+
+def test_pages_and_static_files_are_served(base_url: str) -> None:
+    for path in ("/", "/session", "/diagnostics", "/app.js", "/style.css"):
+        status, body = _get(base_url + path)
+        assert status == 200
+        assert body
+
+
+def test_unknown_route_returns_404(base_url: str) -> None:
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base_url + "/nope")
+    assert exc.value.code == 404
