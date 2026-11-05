@@ -756,6 +756,8 @@ git commit -m "feat: 实现 Trae 记忆目录只读适配器与白名单"
   - `catalog.get_projects(conn) -> list[dict]`
   - `catalog.stats(conn) -> dict[str, int]`
   - `catalog.tokenizer_of(conn) -> str`
+  - `catalog.has_schema(conn) -> bool`（`projects` 表是否存在，供 CLI 预检）
+  - `catalog.SESSION_ID_RE`（会话 ID 格式的唯一来源：`^[0-9a-f]{24}$`）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -869,11 +871,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import NamedTuple
 
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
+
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -956,6 +961,13 @@ def init_schema(conn: sqlite3.Connection) -> str:
     )
     conn.commit()
     return tokenizer_of(conn)
+
+
+def has_schema(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='projects'"
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def tokenizer_of(conn: sqlite3.Connection) -> str:
@@ -2022,6 +2034,18 @@ def build_archive(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _invalid_json_line(bundle: zipfile.ZipFile, name: str) -> int | None:
+    with bundle.open(name) as handle:
+        for number, raw in enumerate(handle, start=1):
+            if not raw.strip():
+                continue
+            try:
+                json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return number
+    return None
+
+
 def verify_archive(path: Path) -> VerifyResult:
     path = Path(path)
     try:
@@ -2054,6 +2078,7 @@ def verify_archive(path: Path) -> VerifyResult:
             issues.append(VerifyIssue("E_MANIFEST_INVALID", "files 为空"))
             files = []
         seen: set[str] = set()
+        verified: set[str] = set()
         for entry in files:
             name = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(name, str) or _unsafe_member(name):
@@ -2070,8 +2095,21 @@ def verify_archive(path: Path) -> VerifyResult:
                 digest = _sha256_stream(handle)
             if digest != entry.get("sha256"):
                 issues.append(VerifyIssue("E_HASH_MISMATCH", name))
+            else:
+                verified.add(name)
         for name in sorted(set(names) - seen - {MANIFEST_NAME}):
             issues.append(VerifyIssue("E_UNREGISTERED_FILE", name))
+        for name in sorted(seen):
+            if not name.endswith("/meta.json"):
+                continue
+            sibling = name[: -len("meta.json")] + "messages.ndjson"
+            if sibling not in seen:
+                issues.append(VerifyIssue("E_SESSION_INCOMPLETE", name))
+                continue
+            if sibling in verified:
+                bad_line = _invalid_json_line(bundle, sibling)
+                if bad_line is not None:
+                    issues.append(VerifyIssue("E_NDJSON_INVALID", f"{sibling}:{bad_line}"))
         if not issues and manifest.get("archive_id") != compute_archive_id(files):
             issues.append(VerifyIssue("E_ARCHIVE_ID_MISMATCH", "archive_id 不可复现"))
     return VerifyResult(path, not issues, tuple(issues), manifest)
@@ -2084,6 +2122,23 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
         raise ArchiveError(result.issues)
     manifest = result.manifest
     project = manifest["project"]
+    metas: list[tuple[str, dict]] = []
+    illegal: list[VerifyIssue] = []
+    with zipfile.ZipFile(path) as bundle:
+        for entry in manifest["files"]:
+            name = entry["path"]
+            if not name.endswith("/meta.json"):
+                continue
+            meta = json.loads(bundle.read(name).decode("utf-8"))
+            session_id = meta.get("session_id")
+            if not isinstance(session_id, str) or not catalog.SESSION_ID_RE.match(
+                session_id
+            ):
+                illegal.append(VerifyIssue("E_SESSION_ID", name))
+                continue
+            metas.append((name, meta))
+    if illegal:
+        raise ArchiveError(illegal)
     catalog.upsert_project(conn, ProjectRecord(
         project_id=project["project_id"],
         display_name=project.get("display_name") or project["project_id"],
@@ -2097,59 +2152,72 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
         (run_id, f"archive:{manifest['archive_id']}", manifest["format_version"],
          datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "running"),
     )
-    sessions = messages = created = inserted = 0
-    touched: set[str] = set()
-    with zipfile.ZipFile(path) as bundle:
-        for entry in manifest["files"]:
-            name = entry["path"]
-            if not name.endswith("/meta.json"):
-                continue
-            session_dir = name.rsplit("/", 1)[0]
-            meta = json.loads(bundle.read(name).decode("utf-8"))
-            session_id = meta["session_id"]
-            touched.add(session_id)
-            summary = meta.get("summary") or meta.get("title") or ""
-            if summary:
-                outcome = catalog.upsert_topic(conn, TopicRecord(
-                    session_id=session_id,
-                    topic_time=meta.get("updated_at") or meta.get("created_at") or "",
-                    body=summary,
-                    project_id=meta["project_id"],
-                    source_kind=meta.get("source_kind") or "archive",
-                ))
-                created += int(outcome.session_created)
-            sessions += 1
-            rows = bundle.read(f"{session_dir}/messages.ndjson").decode("utf-8")
-            for line in rows.splitlines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                outcome = catalog.upsert_message(conn, MessageRecord(
-                    session_id=session_id,
-                    message_id=payload["message_id"],
-                    seq=int(payload.get("seq") or 0),
-                    ts=payload.get("ts"),
-                    intent=payload.get("intent"),
-                    outcome=payload.get("outcome"),
-                    actions=tuple(payload.get("actions") or ()),
-                    learned=tuple(payload.get("learned") or ()),
-                    meta=payload.get("meta"),
-                    body=payload.get("body") or "",
-                    project_id=meta["project_id"],
-                    source_kind=meta.get("source_kind") or "archive",
-                ))
-                inserted += int(outcome.inserted)
-                created += int(outcome.session_created)
-                messages += 1
-    if touched:
-        catalog.refresh_session_hashes(conn, touched)
-    conn.execute(
-        "UPDATE import_runs SET finished_at=?, result=?, scanned_files=?,"
-        " imported_rows=?, failed_rows=? WHERE run_id=?",
-        (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "ok",
-         len(manifest["files"]), inserted, 0, run_id),
-    )
     conn.commit()
+    current = MANIFEST_NAME
+    try:
+        sessions = messages = created = inserted = 0
+        touched: set[str] = set()
+        with zipfile.ZipFile(path) as bundle:
+            for name, meta in metas:
+                current = name
+                session_id = meta["session_id"]
+                session_dir = name.rsplit("/", 1)[0]
+                touched.add(session_id)
+                summary = meta.get("summary") or meta.get("title") or ""
+                if summary:
+                    outcome = catalog.upsert_topic(conn, TopicRecord(
+                        session_id=session_id,
+                        topic_time=meta.get("updated_at") or meta.get("created_at") or "",
+                        body=summary,
+                        project_id=meta["project_id"],
+                        source_kind=meta.get("source_kind") or "archive",
+                    ))
+                    created += int(outcome.session_created)
+                sessions += 1
+                current = f"{session_dir}/messages.ndjson"
+                rows = bundle.read(current).decode("utf-8")
+                for line in rows.splitlines():
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line)
+                    outcome = catalog.upsert_message(conn, MessageRecord(
+                        session_id=session_id,
+                        message_id=payload["message_id"],
+                        seq=int(payload.get("seq") or 0),
+                        ts=payload.get("ts"),
+                        intent=payload.get("intent"),
+                        outcome=payload.get("outcome"),
+                        actions=tuple(payload.get("actions") or ()),
+                        learned=tuple(payload.get("learned") or ()),
+                        meta=payload.get("meta"),
+                        body=payload.get("body") or "",
+                        project_id=meta["project_id"],
+                        source_kind=meta.get("source_kind") or "archive",
+                    ))
+                    inserted += int(outcome.inserted)
+                    created += int(outcome.session_created)
+                    messages += 1
+        if touched:
+            catalog.refresh_session_hashes(conn, touched)
+        conn.execute(
+            "UPDATE import_runs SET finished_at=?, result=?, scanned_files=?,"
+            " imported_rows=?, failed_rows=? WHERE run_id=?",
+            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "ok",
+             len(manifest["files"]), inserted, 0, run_id),
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        conn.execute(
+            "UPDATE import_runs SET finished_at=?, result=?, warnings_json=?"
+            " WHERE run_id=?",
+            (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "failed",
+             json.dumps({"error": f"{current}: {str(exc)[:60]}"}, ensure_ascii=False),
+             run_id),
+        )
+        conn.commit()
+        raise ArchiveError(
+            [VerifyIssue("E_IMPORT_FAILED", f"{current}: {str(exc)[:60]}")]) from exc
     return ArchiveImportResult(
         archive_id=manifest["archive_id"],
         sessions=sessions,
@@ -2158,6 +2226,13 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
         messages_inserted=inserted,
     )
 ```
+
+`verify` 额外把关会话完整性：每个已登记的 `*/meta.json` 必须有同名 `messages.ndjson`
+（缺则 `E_SESSION_INCOMPLETE`），且该 ndjson 逐行可解析为 JSON（否则 `E_NDJSON_INVALID`）。
+`import_archive` 在读 meta 后按 `catalog.SESSION_ID_RE` 校验 `session_id`，不合规即按
+ADR-007 拒绝整包（`E_SESSION_ID`），避免后续导出越出 `--out`；导入主体包在 try/except 中，
+任何意外异常都把 `import_runs` 该行标为 `failed`（`warnings_json` 记相对路径与截断原因）
+后再抛 `ArchiveError`。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -2463,6 +2538,8 @@ def _render(session: dict, messages: list[dict], fmt: str) -> str:
 def export_session(
     conn: sqlite3.Connection, session_id: str, dest_dir: Path, fmt: str = "markdown"
 ) -> Path:
+    if not catalog.SESSION_ID_RE.match(session_id):
+        raise ValueError("非法会话 ID")
     session = catalog.get_session(conn, session_id)
     if session is None:
         raise KeyError(session_id)
@@ -2812,6 +2889,7 @@ def collect(memory_root: Path, layout: Layout) -> dict:
         "catalog": {
             "path": str(layout.catalog),
             "exists": layout.catalog.is_file(),
+            "ready": False,
             "stats": {"projects": 0, "sessions": 0, "messages": 0, "fts_rows": 0},
             "tokenizer": "none",
         },
@@ -2820,8 +2898,12 @@ def collect(memory_root: Path, layout: Layout) -> dict:
     if layout.catalog.is_file():
         conn = catalog.connect(layout.catalog)
         try:
-            result["catalog"]["stats"] = catalog.stats(conn)
-            result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)
+            if catalog.has_schema(conn):
+                result["catalog"]["ready"] = True
+                result["catalog"]["stats"] = catalog.stats(conn)
+                result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)
+            else:
+                result["warnings"].append("索引未初始化，请重新运行 import")
         finally:
             conn.close()
     return result
@@ -2853,6 +2935,16 @@ def _layout(args) -> Layout:
 
 def _memory_root(args) -> Path:
     return Path(args.memory_root) if args.memory_root else default_memory_root()
+
+
+def _catalog_ready(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    conn = catalog.connect(path)
+    try:
+        return catalog.has_schema(conn)
+    finally:
+        conn.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2933,8 +3025,11 @@ def _cmd_doctor(args) -> int:
         print(f"私有库：{private['path']}"
               f"（{'存在' if private['exists'] else '不存在'}，"
               f"{private['size']} 字节，不读取）")
-        print(f"索引：{data['catalog']['path']}"
-              f"（{'存在' if data['catalog']['exists'] else '未创建'}）")
+        catalog_info = data["catalog"]
+        state = "未创建"
+        if catalog_info["exists"]:
+            state = "存在" if catalog_info["ready"] else "存在，索引未初始化"
+        print(f"索引：{catalog_info['path']}（{state}）")
         stats = data["catalog"]["stats"]
         print(f"索引统计：项目 {stats['projects']}，会话 {stats['sessions']}，"
               f"消息 {stats['messages']}，FTS {stats['fts_rows']}")
@@ -3010,7 +3105,7 @@ def _cmd_import(args) -> int:
 
 def _cmd_serve(args) -> int:
     layout = _layout(args)
-    if not layout.catalog.is_file():
+    if not _catalog_ready(layout.catalog):
         print("索引不存在，请先运行 sessionpack import", file=sys.stderr)
         return EXIT_USAGE
     from sessionpack.server import serve
@@ -3022,7 +3117,7 @@ def _cmd_serve(args) -> int:
 
 def _cmd_export(args) -> int:
     layout = _layout(args)
-    if not layout.catalog.is_file():
+    if not _catalog_ready(layout.catalog):
         print("索引不存在，请先运行 sessionpack import", file=sys.stderr)
         return EXIT_USAGE
     conn = catalog.connect(layout.catalog)
@@ -3085,7 +3180,11 @@ def _cmd_verify(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":
@@ -3250,7 +3349,6 @@ Expected: FAIL，`ModuleNotFoundError: No module named 'sessionpack.server'`
 from __future__ import annotations
 
 import json
-import re
 import secrets
 import threading
 import webbrowser
@@ -3264,7 +3362,7 @@ from sessionpack.paths import default_memory_root, ensure_layout
 from sessionpack.summary import build_summary
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+SESSION_ID_RE = catalog.SESSION_ID_RE
 PAGES = {"/": "index.html", "/session": "session.html", "/diagnostics": "diagnostics.html"}
 STATIC = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
@@ -3873,8 +3971,8 @@ D1 对应 `tests/test_acceptance.py`，D2 对应 `tests/test_catalog.py` 与 `te
 - 记忆目录（只读）：`%USERPROFILE%\.trae-cn\memory`
 - 索引与归档目录：`%LOCALAPPDATA%\SessionPack`
   - `catalog.sqlite`：可重建的索引
-  - `archives/`：归档包输出目录（`export`、`import` 生成的 zip）
-  - `temp/`：打包临时目录，失败后可整体删除
+  - `archives/`：归档包默认输出目录（由 `export --archive --out` 指定时以 `--out` 为准）
+  - `temp/`：预留的临时目录；打包实际在输出目录内用 `.build-*` 子目录与 `.tmp-*.zip` 临时文件完成，失败后可整体删除
 - 可用 `--data-dir` 覆盖索引目录，`--memory-root` 覆盖记忆目录。
 
 ## 隐私边界
@@ -3887,8 +3985,8 @@ D1 对应 `tests/test_acceptance.py`，D2 对应 `tests/test_catalog.py` 与 `te
 ## 兼容性
 
 - Python 3.11 及以上；无运行时第三方依赖。
-- FTS5 需要 SQLite 3.34+ 且提供 trigram 分词器；不可用时自动退回 LIKE 检索，`doctor` 会显示实际分词器。
-- 适配器以 Trae CN 3.4.14 验证；其他版本按实验性支持，字段缺失时按原文导入并计入失败行。
+- FTS5 需要 SQLite 3.34+ 且提供 trigram 分词器；检索词少于 3 字或 FTS 查询报错时自动退回 LIKE 检索，实际分词器可由 `doctor --json` 的 `catalog.tokenizer` 查看。
+- 适配器以 Trae CN 3.4.14 验证；其他版本按实验性支持，字段缺失或不可解析时跳过该行并计入失败行。
 - 归档格式 `format_version = 1`，读取方必须忽略不认识的字段；破坏性变更才递增版本号。
 
 ## 对 IDE 的影响
