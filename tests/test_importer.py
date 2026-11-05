@@ -232,10 +232,20 @@ def test_resumed_run_backfills_hash_of_skipped_files(
     memory_tree: Path, tmp_path: Path
 ) -> None:
     db = tmp_path / "catalog.sqlite"
-    import_source(TraeMemoryAdapter(), memory_tree, db, stop_after_rows=1)
     import_source(TraeMemoryAdapter(), memory_tree, db)
     conn = catalog.connect(db)
-    rows = conn.execute("SELECT content_hash FROM sessions").fetchall()
+    try:
+        conn.execute("UPDATE sessions SET content_hash=NULL")
+        conn.commit()
+    finally:
+        conn.close()
+    again = import_source(TraeMemoryAdapter(), memory_tree, db)
+    assert again.files_skipped == 4
+    conn = catalog.connect(db)
+    try:
+        rows = conn.execute("SELECT content_hash FROM sessions").fetchall()
+    finally:
+        conn.close()
     assert rows, "应已导入会话"
     assert all(row["content_hash"] for row in rows)
 
@@ -251,7 +261,7 @@ def test_oserror_uses_strerror_in_failure_text(
 
     def boom(self, ref, start_offset=0, start_seq=0):
         if ref.path == failing:
-            raise OSError(2, "No such file or directory")
+            raise OSError(2, "No such file or directory", str(failing))
         yield from real_read(self, ref, start_offset, start_seq)
 
     monkeypatch.setattr(TraeMemoryAdapter, "read_file", boom)
@@ -259,6 +269,7 @@ def test_oserror_uses_strerror_in_failure_text(
     assert result.failures
     joined = " | ".join(result.failures)
     assert "No such file or directory" in joined
+    assert "[Errno 2]" not in joined
     assert str(failing.parent) not in joined and "\\2\\" not in joined
 
 
