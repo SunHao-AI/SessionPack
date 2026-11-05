@@ -1600,8 +1600,17 @@ def import_source(
                     break
                 if uncommitted >= batch:
                     commit()
+        except OSError as exc:
+            stats.rows_failed += 1
+            state.error = str(exc)[:60]
+            state.done = False
+            state.dirty = True
+            dirty.add(key)
+            if len(stats.failures) < MAX_FAILURES:
+                stats.failures.append(f"{state.rel}: {str(exc)[:60]}")
         else:
             if stop:
+                stats.stopped = True
                 commit()
                 break
             state.done = True
