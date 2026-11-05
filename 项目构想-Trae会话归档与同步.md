@@ -346,7 +346,7 @@ SQLite 仅服务本机索引，全文索引使用 FTS5；原始正文与附件�
 实现验证（2026-11-05）：MVP 1 落地后，与设计约束相关的五项验收已在 `tests/test_acceptance.py`、`tests/test_archive.py` 与真实数据链路上复验通过，数据源限定为 `.trae-cn/memory` 白名单文件（`topics.md`、`session_memory_*.jsonl`、各项目 `project_memory.md`、根 `user_profile.md`），私有库与 SOLO 不在读取范围。
 
 - 只读哈希不变：导入前后对源目录逐文件比对 SHA-256，写入 0 次、哈希全等（`test_import_never_modifies_source_tree`）。
-- `--audit` 无越界：`import --audit` 用 `sys.addaudithook` 记录本次实际打开的文件，实际集合越出声明清单即失败退出；真实数据实测打开 14 个文件，越界 0。
+- `--audit` 无越界：`import --audit` 用 `sys.addaudithook` 记录本次实际打开的文件，实际集合越出声明清单即失败退出（审计在导入结束时统一判定，属事后审计，钩内即时拦截留待后续）；真实数据实测打开 14 个文件，越界 0。
 - 强杀后续跑行数一致：导入中途 `os._exit(9)` 杀掉进程后重跑，消息行数与逐文件完成标记均与不中断导入一致（`test_hard_kill_then_resume_completes`）。
 - 归档篡改被拒绝：改动正文哈希、删除 manifest、增删条目、路径穿越均被 `verify` 拒绝，`import --archive` 对篡改包直接失败（`test_import_refuses_tampered_archive` 等）。
 - 检索 P95 实测值：对本机真实语料（5 项目 / 9 会话 / 47 消息，trigram 分词）连续 30 次 `catalog.search_messages` 调用，P95 为 0.6 ms、最大 3.2 ms；语料仅 47 条消息，该值只说明链路无异常开销，不代表规模性能，规模性能以第 10 节 27.8 MB 合成集基线（FTS 1.6 ms）为准。
@@ -381,7 +381,7 @@ MVP 聚焦单机完整可用：诊断数据源 → 导入本地目录 → 搜索
 
 ### 18.4 MVP 数据与接口边界
 
-适配器对核心层只暴露 `detect()`、`inspect()`、`enumerate()`、`read_session()` 等只读接口，并额外暴露 `declared_paths()`，返回本次操作将要打开的文件清单。核心层在调用读取前比对该清单与实际路径，不一致即中止并报诊断码。
+适配器对核心层只暴露 `detect()`、`inspect()`、`enumerate()`、`read_file()` 等只读接口，并额外暴露 `declared_paths()`，返回本次操作将要打开的文件清单。核心层在调用读取前比对该清单与实际路径，不一致即中止并报诊断码。
 
 核心层负责规范化、去重、对象写入、索引和报告；UI/CLI 不直接调用适配器内部实现。导入任务以 `ImportRun` 为单位，可查询进度、取消和重试。
 
