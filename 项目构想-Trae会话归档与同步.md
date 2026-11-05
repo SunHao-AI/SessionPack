@@ -343,7 +343,7 @@ SQLite 仅服务本机索引，全文索引使用 FTS5；原始正文与附件�
 - [ ] 明确同步目标存储与远端加密方案（MVP 2 前完成）。
 - [ ] 确认企业设备内容的同步政策、许可证和依赖合规要求。
 
-实现验证（2026-11-05）：MVP 1 落地后，上述与设计相关的四项约束已在 `tests/test_acceptance.py`、`tests/test_archive.py` 与真实数据链路上复验通过，数据源限定为 `.trae-cn/memory` 白名单文件（`topics.md`、`session_memory_*.jsonl`、各项目 `project_memory.md`、根 `user_profile.md`），私有库与 SOLO 不在读取范围。
+实现验证（2026-11-05）：MVP 1 落地后，与设计约束相关的五项验收已在 `tests/test_acceptance.py`、`tests/test_archive.py` 与真实数据链路上复验通过，数据源限定为 `.trae-cn/memory` 白名单文件（`topics.md`、`session_memory_*.jsonl`、各项目 `project_memory.md`、根 `user_profile.md`），私有库与 SOLO 不在读取范围。
 
 - 只读哈希不变：导入前后对源目录逐文件比对 SHA-256，写入 0 次、哈希全等（`test_import_never_modifies_source_tree`）。
 - `--audit` 无越界：`import --audit` 用 `sys.addaudithook` 记录本次实际打开的文件，实际集合越出声明清单即失败退出；真实数据实测打开 14 个文件，越界 0。
