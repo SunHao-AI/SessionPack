@@ -70,6 +70,13 @@ def test_extract_file_mentions_strips_absolute_roots() -> None:
     ]
 
 
+def test_extract_file_mentions_strips_dotdot() -> None:
+    found = summary.extract_file_mentions(["见 ../src/utils.py 与 ../../pkg/app.js"])
+    assert "src/utils.py" in found
+    assert "pkg/app.js" in found
+    assert not any(item.startswith("..") for item in found)
+
+
 def test_export_session_writes_markdown_and_json(filled_db: Path, tmp_path: Path) -> None:
     conn = catalog.connect(filled_db)
     out = tmp_path / "out"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -164,6 +165,26 @@ def test_batch_survives_hard_kill_without_loss_or_duplicates(
     assert _counts(db) == {
         "projects": 2, "sessions": 2, "messages": 4, "fts_rows": 4,
     }
+
+
+def test_invalid_utf8_line_never_enters_body(tmp_path: Path) -> None:
+    sid = "c" * 24
+    root = tmp_path / "memory"
+    session_dir = root / "projects" / "proj-a" / "20260102"
+    session_dir.mkdir(parents=True)
+    path = session_dir / f"session_memory_{sid}.jsonl"
+    good = json.dumps({
+        "message_id": "m1", "ts": "2026-01-02T10:00:00",
+        "intent": "正常行", "outcome": "", "actions": [], "learned": [],
+    }, ensure_ascii=False).encode("utf-8")
+    bad = b'{"message_id": "m2", "intent": "\xff\xfe broken"}\n'
+    path.write_bytes(good + b"\n" + bad)
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), root, db)
+    conn = catalog.connect(db)
+    bodies = [r["body"] for r in conn.execute("SELECT body FROM messages")]
+    assert all("\ufffd" not in (body or "") for body in bodies)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
 def test_import_never_modifies_source_tree(memory_tree: Path, tmp_path: Path) -> None:

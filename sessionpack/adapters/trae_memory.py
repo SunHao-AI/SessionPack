@@ -126,7 +126,12 @@ class TraeMemoryAdapter:
             handle.seek(start_offset)
             for raw in handle:
                 offset += len(raw)
-                line = raw.decode("utf-8", errors="replace").strip()
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    yield offset, None, "invalid utf-8"
+                    continue
+                line = text.strip()
                 if not line:
                     yield offset, None, None
                     continue

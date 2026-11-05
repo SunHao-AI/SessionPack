@@ -25,6 +25,8 @@ def extract_file_mentions(texts: list[str]) -> list[str]:
                 normalized = normalized.rsplit("/", 1)[-1]
             while normalized.startswith("./"):
                 normalized = normalized[2:]
+            while normalized.startswith("../"):
+                normalized = normalized[3:]
             found.add(normalized)
     return sorted(found)
 
