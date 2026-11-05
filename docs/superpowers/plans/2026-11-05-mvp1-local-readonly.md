@@ -2619,6 +2619,39 @@ def test_export_archive_creates_zip(memory_tree: Path, tmp_path: Path) -> None:
     assert len(list(out.glob("*.zip"))) == 2
 
 
+def test_export_unknown_session_returns_two(memory_tree: Path, tmp_path: Path,
+                                            capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir),
+                 "--session", "f" * 24, "--out", str(tmp_path / "out")])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "会话不存在" in err
+    assert "None" not in err
+
+
+def test_export_unknown_project_returns_two(memory_tree: Path, tmp_path: Path,
+                                            capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir), "--project", "nope",
+                 "--out", str(tmp_path / "out")])
+    assert code == 2
+    assert "项目不存在或无会话" in capsys.readouterr().err
+
+
+def test_export_archive_unknown_project_returns_one(memory_tree: Path,
+                                                    tmp_path: Path,
+                                                    capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir), "--archive",
+                 "--project", "nope", "--out", str(tmp_path / "archives")])
+    assert code == 1
+    assert "导出失败" in capsys.readouterr().err
+
+
 def test_verify_bad_archive_returns_three(tmp_path: Path, capsys) -> None:
     code = main(["verify", str(tmp_path / "nope.zip")])
     assert code == 3
@@ -3007,18 +3040,25 @@ def _cmd_export(args) -> int:
                       f"会话 {item.sessions}，消息 {item.messages}）")
             return EXIT_OK
         if args.session:
-            path = export.export_session(conn, args.session, out, args.format)
+            try:
+                path = export.export_session(conn, args.session, out, args.format)
+            except KeyError:
+                print(f"会话不存在: {args.session}", file=sys.stderr)
+                return EXIT_USAGE
             print(f"已导出 {path}")
             return EXIT_OK
         if args.project:
+            if not catalog.list_sessions(conn, project_id=args.project, limit=1):
+                print(f"项目不存在或无会话: {args.project}", file=sys.stderr)
+                return EXIT_USAGE
             result = export.export_project(conn, args.project, out, args.format)
         else:
             result = export.export_all(conn, out, args.format)
         print(f"已导出 {result.sessions} 个会话、{result.messages} 条消息到 {out}")
         return EXIT_OK
-    except KeyError:
-        print(f"会话不存在: {args.session}", file=sys.stderr)
-        return EXIT_USAGE
+    except ValueError as exc:
+        print(f"导出失败: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     finally:
         conn.close()
 
@@ -3055,7 +3095,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python -m pytest tests/test_cli.py tests/test_audit.py -v`
-Expected: 12 passed
+Expected: 15 passed
 
 - [ ] **Step 5: 提交**
 
