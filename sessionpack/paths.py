@@ -11,10 +11,7 @@ APP_NAME = "SessionPack"
 class Layout:
     root: Path
     catalog: Path
-    objects: Path
     archives: Path
-    temp: Path
-    config: Path
 
 
 def default_data_dir() -> Path:
@@ -36,12 +33,9 @@ def ensure_layout(root: Path) -> Layout:
     layout = Layout(
         root=root,
         catalog=root / "catalog.sqlite",
-        objects=root / "objects",
         archives=root / "archives",
-        temp=root / "temp",
-        config=root / "config.toml",
     )
-    for directory in (root, layout.objects, layout.archives, layout.temp):
+    for directory in (root, layout.archives):
         directory.mkdir(parents=True, exist_ok=True)
     return layout
 

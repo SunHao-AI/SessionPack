@@ -7,8 +7,8 @@ def test_ensure_layout_creates_subdirs(tmp_path: Path) -> None:
     layout = ensure_layout(tmp_path)
     assert layout.catalog == tmp_path / "catalog.sqlite"
     assert layout.archives.is_dir()
-    assert layout.objects.is_dir()
-    assert layout.temp.is_dir()
+    assert not hasattr(layout, "objects")
+    assert not hasattr(layout, "temp")
     assert not layout.catalog.exists()
 
 
