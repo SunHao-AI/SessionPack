@@ -125,6 +125,19 @@ def bench_search(db: Path, queries: list[str], repeats: int = 5) -> dict:
     }
 
 
+def partial_progress(db: Path) -> dict:
+    """强杀后直接读库，统计已提交行数与断点位置。"""
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    rows = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM messages) + (SELECT COUNT(*) FROM topic_revisions)"
+    ).fetchone()[0]
+    total = conn.execute("SELECT COALESCE(SUM(rows),0) FROM import_files").fetchone()[0]
+    done = conn.execute("SELECT COUNT(*) FROM import_files WHERE done=1").fetchone()[0]
+    files = conn.execute("SELECT COUNT(*) FROM import_files").fetchone()[0]
+    conn.close()
+    return {"rows": rows, "rows_total": total, "files_done": done, "files_seen": files}
+
+
 def integrity(db: Path) -> dict:
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     out = {
@@ -190,9 +203,15 @@ def main() -> int:
     db_b = DATA / "db" / "b.sqlite"
     reset_db(db_b)
     rc_c1, rep_c1 = run_import(
-        db_b, DATA / "report_c1.json", ["--crash-after-rows", "50000"]
+        db_b, DATA / "report_c1.json", ["--crash-after-rows", "15000"]
     )
-    results["crash"] = {"exit_code": rc_c1, **(rep_c1 or {})}
+    # 进程被强杀时不会写报告，改为直接读库统计已提交进度
+    crash_progress = partial_progress(db_b)
+    results["crash"] = {"exit_code": rc_c1, "committed": crash_progress, **(rep_c1 or {})}
+    print(f"  强杀后已提交：{crash_progress}")
+    assert crash_progress["rows"] > 0, "中断后应保留已提交批次，当前为 0"
+    # 与整批导入的总行数比较，确认强杀确实落在中途而非末尾
+    assert crash_progress["rows"] < rep_a["rows_read"], "中断点未落在导入中途"
     print("中断恢复：断点续跑 ...")
     rc_c2, rep_c2 = run_import(db_b, DATA / "report_c2.json")
     assert rc_c2 == 0 and rep_c2
@@ -235,7 +254,8 @@ def main() -> int:
     print(f"| 失败行 | {b['rows_failed']}（样例：{b['failures']}） |")
     print(f"| 二次重扫 | 新增会话 {rep_b['sessions_new']}，新增行 {rep_b['rows_inserted']}，"
           f"跳过 {rep_b['rows_skipped']} |")
-    print(f"| 中断 | 退出码 {rc_c1}，已提交 {rep_c1['rows_inserted'] if rep_c1 else 0} 行 |")
+    print(f"| 中断 | 退出码 {rc_c1}，强杀时已提交 {crash_progress['rows']} 行，"
+          f"完成 {crash_progress['files_done']}/{crash_progress['files_seen']} 文件 |")
     print(f"| 续跑 | 处理 {rep_c2['files_processed']} 文件，跳过已完成 "
           f"{rep_c2['skipped_unchanged_files']}，续传 {rep_c2['resumed_files']} |")
     print(f"| 计数一致 | {results['recovery_equal']}（基线 {base_counts}） |")

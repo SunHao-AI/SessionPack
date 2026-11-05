@@ -84,10 +84,12 @@ class PeakRSS:
 
     def _init_impl(self):
         if os.name == "nt":
+            from ctypes import wintypes
+
             class PMC(ctypes.Structure):
                 _fields_ = [
-                    ("cb", ctypes.c_uint32),
-                    ("PageFaultCount", ctypes.c_uint32),
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
                     ("PeakWorkingSetSize", ctypes.c_size_t),
                     ("WorkingSetSize", ctypes.c_size_t),
                     ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
@@ -100,12 +102,20 @@ class PeakRSS:
 
             counters = PMC()
             counters.cb = ctypes.sizeof(PMC)
-            kernel32 = ctypes.windll.kernel32
-            psapi = ctypes.windll.psapi
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            # K32GetProcessMemoryInfo 在 Win7+ 的 kernel32 中导出，优先使用；
+            # 两条路径都必须显式声明 argtypes，否则句柄被截断而恒返回 0。
+            get_info = getattr(kernel32, "K32GetProcessMemoryInfo", None)
+            if get_info is None:
+                get_info = psapi.GetProcessMemoryInfo
+            get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
 
             def sample() -> int:
                 handle = kernel32.GetCurrentProcess()
-                if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                if get_info(handle, ctypes.byref(counters), counters.cb):
                     return counters.PeakWorkingSetSize
                 return 0
 
@@ -184,10 +194,12 @@ def init_db(conn: sqlite3.Connection) -> str:
 
 
 class Writer:
-    def __init__(self, conn: sqlite3.Connection, batch: int, crash_after_rows: int | None):
+    def __init__(self, conn: sqlite3.Connection, batch: int, crash_after_rows: int | None,
+                 root: Path | None = None):
         self.conn = conn
         self.batch = batch
         self.crash_after_rows = crash_after_rows
+        self.root = root
         self.pending: list[tuple] = []
         self.cur_key: str | None = None
         self.cur_pos = 0
@@ -291,6 +303,13 @@ class Writer:
         if len(self.stats["failures"]) < 20:
             self.stats["failures"].append({"where": where, "reason": reason})
 
+    def rel(self, path: Path) -> str:
+        """失败记录使用相对路径，避免同一仓库的两份目录副本无法区分。"""
+        try:
+            return path.relative_to(self.root).as_posix() if self.root else path.name
+        except ValueError:
+            return path.as_posix()
+
 
 def project_rows(conn: sqlite3.Connection, project_id: str, dir_name: str) -> None:
     conn.execute(
@@ -335,7 +354,7 @@ def process_jsonl(writer: Writer, path: Path, project_id: str, start_offset: int
                 meta = rec.get("compact_summary_meta")
                 meta_json = json.dumps(meta, ensure_ascii=False) if isinstance(meta, dict) else None
             except (ValueError, json.JSONDecodeError) as exc:
-                writer.fail(f"{path.name}:{offset}", str(exc)[:60])
+                writer.fail(f"{writer.rel(path)}:{offset}", str(exc)[:60])
                 continue
             seq += 1
             body = " ".join([x for x in [intent, outcome, *actions, *learned] if x])
@@ -358,7 +377,7 @@ def process_topics(writer: Writer, path: Path, project_id: str, start_offset: in
                 continue
             m = TOPIC_RE.match(line)
             if not m:
-                writer.fail(f"{path}:{offset}", "topic format mismatch")
+                writer.fail(f"{writer.rel(path)}:{offset}", "topic format mismatch")
                 continue
             sid, ts, body = m.group(1), m.group(2), m.group(3).strip()
             writer.add(("topic", (sid, ts, body, project_id)))
@@ -398,7 +417,7 @@ def main() -> int:
 
     conn = sqlite3.connect(db_path)
     tokenizer = init_db(conn)
-    writer = Writer(conn, args.batch, args.crash_after_rows)
+    writer = Writer(conn, args.batch, args.crash_after_rows, memory_root)
     counters = {"jsonl_files": 0, "topic_files": 0, "resumed_files": 0, "skipped_files": 0}
     run_id = f"run-{int(time.time() * 1000)}"
     conn.execute(
