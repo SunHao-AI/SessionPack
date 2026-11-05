@@ -207,18 +207,25 @@ def _cmd_export(args) -> int:
                       f"会话 {item.sessions}，消息 {item.messages}）")
             return EXIT_OK
         if args.session:
-            path = export.export_session(conn, args.session, out, args.format)
+            try:
+                path = export.export_session(conn, args.session, out, args.format)
+            except KeyError:
+                print(f"会话不存在: {args.session}", file=sys.stderr)
+                return EXIT_USAGE
             print(f"已导出 {path}")
             return EXIT_OK
         if args.project:
+            if not catalog.list_sessions(conn, project_id=args.project, limit=1):
+                print(f"项目不存在或无会话: {args.project}", file=sys.stderr)
+                return EXIT_USAGE
             result = export.export_project(conn, args.project, out, args.format)
         else:
             result = export.export_all(conn, out, args.format)
         print(f"已导出 {result.sessions} 个会话、{result.messages} 条消息到 {out}")
         return EXIT_OK
-    except KeyError:
-        print(f"会话不存在: {args.session}", file=sys.stderr)
-        return EXIT_USAGE
+    except ValueError as exc:
+        print(f"导出失败: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     finally:
         conn.close()
 

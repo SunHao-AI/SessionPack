@@ -80,6 +80,39 @@ def test_export_archive_creates_zip(memory_tree: Path, tmp_path: Path) -> None:
     assert len(list(out.glob("*.zip"))) == 2
 
 
+def test_export_unknown_session_returns_two(memory_tree: Path, tmp_path: Path,
+                                            capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir),
+                 "--session", "f" * 24, "--out", str(tmp_path / "out")])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "会话不存在" in err
+    assert "None" not in err
+
+
+def test_export_unknown_project_returns_two(memory_tree: Path, tmp_path: Path,
+                                            capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir), "--project", "nope",
+                 "--out", str(tmp_path / "out")])
+    assert code == 2
+    assert "项目不存在或无会话" in capsys.readouterr().err
+
+
+def test_export_archive_unknown_project_returns_one(memory_tree: Path,
+                                                    tmp_path: Path,
+                                                    capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir), "--archive",
+                 "--project", "nope", "--out", str(tmp_path / "archives")])
+    assert code == 1
+    assert "导出失败" in capsys.readouterr().err
+
+
 def test_verify_bad_archive_returns_three(tmp_path: Path, capsys) -> None:
     code = main(["verify", str(tmp_path / "nope.zip")])
     assert code == 3
