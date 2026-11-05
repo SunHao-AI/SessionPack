@@ -61,8 +61,27 @@ def create_server(
                 # compare_digest 拒绝含非 ASCII 的 str；按未授权处理而非崩溃
                 return False
 
+        def _loopback_ok(self, parsed) -> bool:
+            origin = self.headers.get("Origin")
+            if origin:
+                host = urlparse(origin).hostname
+                if host not in ("127.0.0.1", "localhost", "::1"):
+                    return False
+            raw = self.headers.get("Host") or ""
+            name, sep, port = raw.rpartition(":")
+            if not sep:
+                name, port = raw, ""
+            if name not in ("127.0.0.1", "localhost", "[::1]", "::1"):
+                return False
+            if port and port != str(self.server.server_address[1]):
+                return False
+            return True
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if not self._loopback_ok(parsed):
+                self._json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+                return
             path = parsed.path.rstrip("/") or "/"
             query = parse_qs(parsed.query)
             if path in PAGES:

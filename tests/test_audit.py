@@ -23,3 +23,26 @@ def test_audit_flags_undeclared_open(memory_tree: Path) -> None:
     with pytest.raises(ReadBoundaryError) as exc:
         audit.check([])
     assert "trae-jwt-token" in str(exc.value)
+
+
+def test_violations_deduplicated(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    evil = root / "evil.txt"
+    evil.write_text("x", encoding="utf-8")
+    with ReadAudit(root, []) as audit:
+        evil.read_text(encoding="utf-8")
+        evil.read_text(encoding="utf-8")
+    assert audit.violations == ["evil.txt"]
+
+
+def test_hook_inactive_after_exit(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    evil = root / "evil.txt"
+    evil.write_text("x", encoding="utf-8")
+    with ReadAudit(root, []) as audit:
+        pass
+    assert audit.active is False
+    evil.read_text(encoding="utf-8")
+    assert audit.violations == []

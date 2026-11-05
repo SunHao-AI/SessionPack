@@ -1,3 +1,4 @@
+import http.client
 import json
 import threading
 import urllib.error
@@ -99,6 +100,34 @@ def test_pages_and_static_files_are_served(base_url: str) -> None:
         status, body = _get(base_url + path)
         assert status == 200
         assert body
+
+
+def _request_with_host(base: str, host: str, token: str = "test-token"):
+    from urllib.parse import urlsplit
+    parts = urlsplit(base)
+    conn = http.client.HTTPConnection("127.0.0.1", parts.port, timeout=5)
+    conn.request("GET", "/api/sessions?token=" + token, headers={"Host": host})
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    return resp.status, body
+
+
+def test_host_header_validated(base_url) -> None:
+    status, _ = _request_with_host(base_url, "evil.example.com")
+    assert status == 403
+    status, _ = _request_with_host(base_url, "localhost")
+    assert status == 200
+
+
+def test_origin_header_validated(base_url) -> None:
+    from urllib.parse import urlsplit
+    parts = urlsplit(base_url)
+    conn = http.client.HTTPConnection("127.0.0.1", parts.port, timeout=5)
+    conn.request("GET", "/api/sessions?token=test-token",
+                 headers={"Origin": "http://evil.example.com"})
+    assert conn.getresponse().status == 403
+    conn.close()
 
 
 def test_unknown_route_returns_404(base_url: str) -> None:

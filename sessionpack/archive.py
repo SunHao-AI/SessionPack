@@ -304,6 +304,13 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
     if not result.ok or result.manifest is None:
         raise ArchiveError(result.issues)
     manifest = result.manifest
+    project_meta = manifest.get("project")
+    if not isinstance(project_meta, dict) or not isinstance(
+        project_meta.get("project_id"), str
+    ):
+        raise ArchiveError([
+            VerifyIssue("E_MANIFEST_INVALID", "manifest.project 缺失或非法")
+        ])
     project = manifest["project"]
     metas: list[tuple[str, dict]] = []
     illegal: list[VerifyIssue] = []
@@ -312,7 +319,14 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
             name = entry["path"]
             if not name.endswith("/meta.json"):
                 continue
-            meta = json.loads(bundle.read(name).decode("utf-8"))
+            try:
+                meta = json.loads(bundle.read(name).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                illegal.append(VerifyIssue("E_META_INVALID", name))
+                continue
+            if not isinstance(meta, dict):
+                illegal.append(VerifyIssue("E_META_INVALID", name))
+                continue
             session_id = meta.get("session_id")
             if not isinstance(session_id, str) or not catalog.SESSION_ID_RE.fullmatch(
                 session_id

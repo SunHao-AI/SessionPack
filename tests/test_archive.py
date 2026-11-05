@@ -254,6 +254,39 @@ def test_import_marks_run_failed_on_unexpected_error(
     assert _running_runs(fresh) == []
 
 
+def test_import_rejects_manifest_without_project(
+    filled_db: Path, tmp_path: Path
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(built.path) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+    manifest.pop("project")
+    _rebuild(built.path, bad,
+             mutate={"manifest.json": json.dumps(manifest).encode("utf-8")})
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(fresh, bad)
+    assert _running_runs(fresh) == []
+
+
+def test_import_rejects_corrupt_meta_json(
+    filled_db: Path, tmp_path: Path
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+    bad = tmp_path / "bad.zip"
+    _rebuild(built.path, bad, mutate={META_NAME: b"{not json"})
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError):
+        archive.import_archive(fresh, bad)
+    assert _running_runs(fresh) == []
+    assert fresh.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
 def test_build_failure_leaves_no_temp_file(
     filled_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

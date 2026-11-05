@@ -22,16 +22,18 @@ class ReadAudit:
         self.allowed = {str(Path(path).resolve()).casefold() for path in allowed}
         self.opened: set[str] = set()
         self.violations: list[str] = []
+        self.active = True
 
     def __enter__(self) -> "ReadAudit":
         sys.addaudithook(self._hook)
         return self
 
     def __exit__(self, *exc_info) -> bool:
+        self.active = False
         return False
 
     def _hook(self, event: str, args: tuple) -> None:
-        if event != "open" or not args:
+        if not self.active or event != "open" or not args:
             return
         raw = args[0]
         if isinstance(raw, bytes):
@@ -48,7 +50,9 @@ class ReadAudit:
         if key in self.allowed:
             self.opened.add(key)
         else:
-            self.violations.append(resolved.relative_to(self.root).as_posix())
+            rel = resolved.relative_to(self.root).as_posix()
+            if rel not in self.violations:
+                self.violations.append(rel)
 
     def check(self, declared: list[Path]) -> None:
         allowed = {str(Path(path).resolve()).casefold() for path in declared}
