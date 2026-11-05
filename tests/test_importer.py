@@ -228,3 +228,72 @@ def test_midfile_oserror_not_marked_done(
     assert [tuple(r) for r in rows] == [("m1", 1), ("m2", 2)]
 
 
+def test_resumed_run_backfills_hash_of_skipped_files(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), memory_tree, db, stop_after_rows=1)
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    conn = catalog.connect(db)
+    rows = conn.execute("SELECT content_hash FROM sessions").fetchall()
+    assert rows, "应已导入会话"
+    assert all(row["content_hash"] for row in rows)
+
+
+def test_oserror_uses_strerror_in_failure_text(
+    memory_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "catalog.sqlite"
+    failing = next(
+        memory_tree.glob("projects/*/20260102/session_memory_*.jsonl")
+    )
+    real_read = TraeMemoryAdapter.read_file
+
+    def boom(self, ref, start_offset=0, start_seq=0):
+        if ref.path == failing:
+            raise OSError(2, "No such file or directory")
+        yield from real_read(self, ref, start_offset, start_seq)
+
+    monkeypatch.setattr(TraeMemoryAdapter, "read_file", boom)
+    result = import_source(TraeMemoryAdapter(), memory_tree, db)
+    assert result.failures
+    joined = " | ".join(result.failures)
+    assert "No such file or directory" in joined
+    assert str(failing.parent) not in joined and "\\2\\" not in joined
+
+
+def test_retry_failed_rereads_failed_files(
+    memory_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "catalog.sqlite"
+    failing = next(
+        memory_tree.glob("projects/*/20260102/session_memory_*.jsonl")
+    )
+    rel = failing.relative_to(memory_tree).as_posix()
+    real_read = TraeMemoryAdapter.read_file
+    armed = {"on": True}
+
+    def flaky(self, ref, start_offset=0, start_seq=0):
+        for item in real_read(self, ref, start_offset, start_seq):
+            yield item
+            if armed["on"] and ref.path == failing:
+                raise OSError("simulated mid-read failure")
+
+    monkeypatch.setattr(TraeMemoryAdapter, "read_file", flaky)
+    first = import_source(TraeMemoryAdapter(), memory_tree, db)
+    assert any(rel in failure for failure in first.failures)
+    armed["on"] = False
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    conn = catalog.connect(db)
+    row = conn.execute(
+        "SELECT error, done FROM import_files WHERE path=?", (str(failing),)
+    ).fetchone()
+    assert row["error"], "不带 --retry-failed 时失败行应保留"
+    import_source(TraeMemoryAdapter(), memory_tree, db, retry_failed=True)
+    row = conn.execute(
+        "SELECT error, done FROM import_files WHERE path=?", (str(failing),)
+    ).fetchone()
+    assert row["error"] is None and row["done"] == 1
+    assert catalog.stats(conn)["messages"] >= 4
+
+

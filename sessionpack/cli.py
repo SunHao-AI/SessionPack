@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--since", default=None)
     imp.add_argument("--until", default=None)
     imp.add_argument("--reparse", action="store_true")
+    imp.add_argument("--retry-failed", action="store_true",
+                     help="重置上次失败的源文件并重新读取")
     imp.add_argument("--audit", action="store_true")
     imp.add_argument("--json", action="store_true")
     imp.set_defaults(func=_cmd_import)
@@ -169,7 +171,8 @@ def _cmd_import(args) -> int:
         return EXIT_USAGE
     adapter = get_adapter()
     declared = adapter.declared_paths(root)
-    kwargs = dict(reparse=args.reparse, project_filter=args.project,
+    kwargs = dict(reparse=args.reparse, retry_failed=args.retry_failed,
+                  project_filter=args.project,
                   since=args.since, until=args.until)
     if args.audit:
         with ReadAudit(root, declared) as audit:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sessionpack import catalog
 from sessionpack.adapters.base import MemoryAdapter
-from sessionpack.adapters.trae_memory import project_display_name
+from sessionpack.adapters.trae_memory import SESSION_FILE_RE, project_display_name
 from sessionpack.mem import peak_rss_mb
 from sessionpack.model import MessageRecord, ProjectRecord, SourceFile, TopicRecord
 
@@ -96,6 +96,7 @@ def import_source(
     *,
     batch: int = BATCH_ROWS,
     reparse: bool = False,
+    retry_failed: bool = False,
     project_filter: str | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -143,7 +144,8 @@ def import_source(
             info = ref.path.stat()
         except OSError as exc:
             stats.rows_failed += 1
-            stats.failures.append(f"{_relative(ref.path, root)}: {str(exc)[:60]}")
+            text = (exc.strerror or str(exc))[:60]
+            stats.failures.append(f"{_relative(ref.path, root)}: {text}")
             continue
         row = existing.get(key)
         if row is None:
@@ -166,6 +168,16 @@ def import_source(
             states[key].rows = 0
             states[key].done = False
             resets.append((info.st_size, info.st_mtime, key))
+        if retry_failed and row["error"]:
+            conn.execute(
+                "UPDATE import_files SET offset=0, rows=0, done=0, error=NULL"
+                " WHERE path=?",
+                (row["path"],),
+            )
+            states[key].offset = 0
+            states[key].rows = 0
+            states[key].done = False
+            states[key].error = None
 
     if to_insert:
         conn.executemany(
@@ -210,6 +222,9 @@ def import_source(
             continue
         if state.done and not reparse:
             stats.files_skipped += 1
+            match = SESSION_FILE_RE.match(Path(state.rel).name)
+            if match:
+                touched.add(match.group(1))
             continue
         start_offset, start_seq = (0, 0) if reparse else (state.offset, state.rows)
         try:
@@ -251,12 +266,13 @@ def import_source(
                     commit()
         except OSError as exc:
             stats.rows_failed += 1
-            state.error = str(exc)[:60]
+            text = (exc.strerror or str(exc))[:60]
+            state.error = text
             state.done = False
             state.dirty = True
             dirty.add(key)
             if len(stats.failures) < MAX_FAILURES:
-                stats.failures.append(f"{state.rel}: {str(exc)[:60]}")
+                stats.failures.append(f"{state.rel}: {text}")
         else:
             if stop:
                 stats.stopped = True
@@ -264,6 +280,8 @@ def import_source(
                 break
             state.done = True
             state.dirty = True
+            if retry_failed:
+                state.error = None
         dirty.add(key)
         stats.files_processed += 1
 
