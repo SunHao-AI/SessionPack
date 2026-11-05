@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 
-SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (

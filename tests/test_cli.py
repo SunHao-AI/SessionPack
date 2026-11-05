@@ -178,3 +178,29 @@ def test_main_falls_back_on_unexpected_error(memory_tree: Path, tmp_path: Path,
     captured = capsys.readouterr()
     assert captured.err.startswith("错误: ")
     assert "Traceback" not in captured.err
+
+
+def test_zero_byte_catalog_not_rewritten_by_precheck(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    catalog_file = data_dir / "catalog.sqlite"
+    catalog_file.write_bytes(b"")
+    code = main(["export", "--session", "a" * 24, "--out", str(tmp_path / "out"),
+                 "--data-dir", str(data_dir)])
+    assert code == 2
+    assert catalog_file.stat().st_size == 0
+
+
+def test_non_sqlite_catalog_is_not_rewritten(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    catalog_file = data_dir / "catalog.sqlite"
+    catalog_file.write_bytes(b"definitely not a database")
+    code = main(["export", "--session", "a" * 24, "--out", str(tmp_path / "out"),
+                 "--data-dir", str(data_dir)])
+    assert code == 2
+    assert catalog_file.read_bytes() == b"definitely not a database"

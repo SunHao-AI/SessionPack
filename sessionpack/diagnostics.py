@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 from sessionpack import catalog
@@ -46,9 +47,19 @@ def collect(memory_root: Path, layout: Layout) -> dict:
         "warnings": [] if exists else ["记忆目录不存在"],
     }
     if layout.catalog.is_file():
-        conn = catalog.connect(layout.catalog)
         try:
-            if catalog.has_schema(conn):
+            conn = sqlite3.connect(
+                f"file:{layout.catalog.resolve().as_posix()}?mode=ro", uri=True
+            )
+        except sqlite3.Error:
+            result["warnings"].append("索引库无法打开，请重新运行 import")
+            return result
+        try:
+            try:
+                ready = catalog.has_schema(conn)
+            except sqlite3.DatabaseError:
+                ready = False
+            if ready:
                 result["catalog"]["ready"] = True
                 result["catalog"]["stats"] = catalog.stats(conn)
                 result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)

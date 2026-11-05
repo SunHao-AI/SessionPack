@@ -96,7 +96,7 @@ def create_server(
                     return
                 if path.startswith("/api/sessions/"):
                     session_id = path.rsplit("/", 1)[-1]
-                    if not SESSION_ID_RE.match(session_id):
+                    if not SESSION_ID_RE.fullmatch(session_id):
                         self._json(HTTPStatus.NOT_FOUND, {"error": "会话 ID 非法"})
                         return
                     session = catalog.get_session(conn, session_id)

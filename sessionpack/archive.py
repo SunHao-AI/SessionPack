@@ -314,7 +314,7 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                 continue
             meta = json.loads(bundle.read(name).decode("utf-8"))
             session_id = meta.get("session_id")
-            if not isinstance(session_id, str) or not catalog.SESSION_ID_RE.match(
+            if not isinstance(session_id, str) or not catalog.SESSION_ID_RE.fullmatch(
                 session_id
             ):
                 illegal.append(VerifyIssue("E_SESSION_ID", name))

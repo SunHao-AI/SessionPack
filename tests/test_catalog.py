@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from sessionpack import catalog
+import pytest
+
+from sessionpack import catalog, export
 from sessionpack.model import MessageRecord, TopicRecord
 
 
@@ -99,3 +101,17 @@ def test_stats_returns_all_counts(tmp_path: Path) -> None:
     assert catalog.stats(conn) == {
         "projects": 0, "sessions": 1, "messages": 1, "fts_rows": 1,
     }
+
+
+def test_session_id_rejects_trailing_newline() -> None:
+    assert catalog.SESSION_ID_RE.fullmatch("a" * 24)
+    assert catalog.SESSION_ID_RE.fullmatch("a" * 24 + "\n") is None
+    assert catalog.SESSION_ID_RE.fullmatch("a" * 23) is None
+
+
+def test_export_session_rejects_trailing_newline(tmp_path: Path) -> None:
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, _msg("正文"))
+    with pytest.raises(ValueError):
+        export.export_session(conn, "a" * 24 + "\n", tmp_path / "out")

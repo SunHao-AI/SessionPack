@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -27,9 +28,16 @@ def _memory_root(args) -> Path:
 def _catalog_ready(path: Path) -> bool:
     if not path.is_file():
         return False
-    conn = catalog.connect(path)
+    try:
+        conn = sqlite3.connect(
+            f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+        )
+    except sqlite3.Error:
+        return False
     try:
         return catalog.has_schema(conn)
+    except sqlite3.DatabaseError:
+        return False
     finally:
         conn.close()
 

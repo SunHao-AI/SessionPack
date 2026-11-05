@@ -52,7 +52,7 @@ def _render(session: dict, messages: list[dict], fmt: str) -> str:
 def export_session(
     conn: sqlite3.Connection, session_id: str, dest_dir: Path, fmt: str = "markdown"
 ) -> Path:
-    if not catalog.SESSION_ID_RE.match(session_id):
+    if not catalog.SESSION_ID_RE.fullmatch(session_id):
         raise ValueError("非法会话 ID")
     session = catalog.get_session(conn, session_id)
     if session is None:
