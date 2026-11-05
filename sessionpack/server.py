@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from sessionpack import catalog, diagnostics
+from sessionpack import catalog, diagnostics, export
 from sessionpack.paths import default_memory_root, ensure_layout
 from sessionpack.summary import build_summary
 
@@ -107,11 +107,47 @@ def create_server(
                 if path == "/api/sessions":
                     project = (query.get("project") or [None])[0]
                     term = (query.get("q") or [None])[0]
+                    source = (query.get("source") or [None])[0]
+                    date_from = (query.get("date_from") or [None])[0]
+                    date_to = (query.get("date_to") or [None])[0]
                     self._json(HTTPStatus.OK, {
                         "sessions": catalog.list_sessions(
-                            conn, project_id=project, q=term, limit=200),
+                            conn, project_id=project, source_kind=source,
+                            date_from=date_from, date_to=date_to,
+                            q=term, limit=200,
+                        ),
                         "projects": catalog.get_projects(conn),
                     })
+                    return
+                if path.startswith("/api/sessions/") and path.endswith("/export"):
+                    session_id = path.rsplit("/", 2)[-2]
+                    if not catalog.SESSION_ID_RE.fullmatch(session_id):
+                        self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                        return
+                    session = catalog.get_session(conn, session_id)
+                    if session is None:
+                        self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                        return
+                    fmt = (query.get("format") or ["markdown"])[0]
+                    if fmt not in ("markdown", "json"):
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": "bad format"})
+                        return
+                    messages = catalog.get_messages(conn, session_id)
+                    try:
+                        text = export._render(session, messages, fmt)
+                    except ValueError:
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": "bad format"})
+                        return
+                    suffix = "json" if fmt == "json" else "md"
+                    payload = text.encode("utf-8")
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type",
+                                     "application/json" if fmt == "json" else "text/markdown")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Content-Disposition",
+                                     f'attachment; filename="{session_id}.{suffix}"')
+                    self.end_headers()
+                    self.wfile.write(payload)
                     return
                 if path.startswith("/api/sessions/"):
                     session_id = path.rsplit("/", 1)[-1]

@@ -204,3 +204,17 @@ def test_non_sqlite_catalog_is_not_rewritten(
                  "--data-dir", str(data_dir)])
     assert code == 2
     assert catalog_file.read_bytes() == b"definitely not a database"
+
+
+def test_doctor_reports_disk_sizes(memory_tree: Path, tmp_path: Path,
+                                   capsys) -> None:
+    data_dir = tmp_path / "data"
+    main(["import", "--memory-root", str(memory_tree),
+          "--data-dir", str(data_dir)])
+    capsys.readouterr()
+    code = main(["doctor", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_dir), "--json"])
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["catalog"]["size_bytes"] > 0
+    assert report["catalog"]["archives_bytes"] == 0

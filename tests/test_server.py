@@ -136,6 +136,32 @@ def test_unknown_route_returns_404(base_url: str) -> None:
     assert exc.value.code == 404
 
 
+def test_sessions_filter_params_passthrough(base_url) -> None:
+    status, body = _get(f"{base_url}/api/sessions?source=trae-memory",
+                        token="test-token")
+    data = json.loads(body)
+    assert status == 200 and len(data["sessions"]) == 2
+    status, body = _get(f"{base_url}/api/sessions?source=none",
+                        token="test-token")
+    assert json.loads(body)["sessions"] == []
+    status, body = _get(f"{base_url}/api/sessions?date_from=2026-01-02",
+                        token="test-token")
+    ids = {s["session_id"] for s in json.loads(body)["sessions"]}
+    assert "b" * 24 in ids
+
+
+def test_session_export_endpoint(base_url) -> None:
+    sid = "a" * 24
+    status, body = _get(f"{base_url}/api/sessions/{sid}/export?format=markdown",
+                        token="test-token")
+    assert status == 200
+    assert "归档" in body.decode("utf-8")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(f"{base_url}/api/sessions/{sid}/export?format=bogus",
+             token="test-token")
+    assert exc.value.code == 400
+
+
 def test_archive_to_serve_search_roundtrip(
     memory_tree: Path, tmp_path: Path
 ) -> None:

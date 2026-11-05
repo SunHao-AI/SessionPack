@@ -15,6 +15,12 @@
     <form id="search">
       <input id="q" type="search" placeholder="输入关键词（≥3 字符走全文索引）">
       <select id="project"><option value="">全部项目</option></select>
+      <select id="source">
+        <option value="">全部来源</option>
+        <option value="trae-memory">trae-memory</option>
+      </select>
+      <input id="date_from" type="date" title="起始日期">
+      <input id="date_to" type="date" title="截止日期">
       <button type="submit">检索</button>
     </form>
     <p id="status"></p>

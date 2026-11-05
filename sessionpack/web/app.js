@@ -27,8 +27,32 @@
     const status = document.getElementById("status");
     const list = document.getElementById("list");
     const select = document.getElementById("project");
+    async function load() {
+      const params = new URLSearchParams();
+      const q = document.getElementById("q").value.trim();
+      const project = document.getElementById("project").value;
+      const source = document.getElementById("source").value;
+      const dateFrom = document.getElementById("date_from").value;
+      const dateTo = document.getElementById("date_to").value;
+      if (q) params.set("q", q);
+      if (project) params.set("project", project);
+      if (source) params.set("source", source);
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
+      const data = await api("/api/sessions?" + params.toString());
+      return data;
+    }
+    document.getElementById("search").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      try {
+        const data = await load();
+        renderSessions(data.sessions, list, status);
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    });
     try {
-      const data = await api("/api/sessions");
+      const data = await load();
       data.projects.forEach(function (project) {
         const option = document.createElement("option");
         option.value = project.project_id;
@@ -36,16 +60,6 @@
         select.appendChild(option);
       });
       renderSessions(data.sessions, list, status);
-      document.getElementById("search").addEventListener("submit", async function (event) {
-        event.preventDefault();
-        const q = document.getElementById("q").value.trim();
-        const project = select.value;
-        const query = new URLSearchParams();
-        if (q) query.set("q", q);
-        if (project) query.set("project", project);
-        const result = await api("/api/sessions?" + query.toString());
-        renderSessions(result.sessions, list, status);
-      });
     } catch (error) {
       status.textContent = error.message;
     }
@@ -106,6 +120,20 @@
     } catch (error) {
       summaryBox.textContent = error.message;
     }
+    document.getElementById("copy").addEventListener("click", async () => {
+      const text = document.getElementById("summary").innerText;
+      await navigator.clipboard.writeText(text);
+    });
+    const exportLink = (fmt) => {
+      const a = document.createElement("a");
+      a.href = withToken(`/api/sessions/${id}/export?format=${fmt}`);
+      a.download = "";
+      a.click();
+    };
+    document.getElementById("export_md").addEventListener(
+      "click", () => exportLink("markdown"));
+    document.getElementById("export_json").addEventListener(
+      "click", () => exportLink("json"));
   }
 
   async function initDiagnostics() {

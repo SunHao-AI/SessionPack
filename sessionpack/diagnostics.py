@@ -43,9 +43,18 @@ def collect(memory_root: Path, layout: Layout) -> dict:
             "ready": False,
             "stats": {"projects": 0, "sessions": 0, "messages": 0, "fts_rows": 0},
             "tokenizer": "none",
+            "size_bytes": 0,
+            "archives_bytes": 0,
         },
         "warnings": [] if exists else ["记忆目录不存在"],
     }
+    if layout.catalog.is_file():
+        result["catalog"]["size_bytes"] = layout.catalog.stat().st_size
+    archives = layout.archives
+    if archives.is_dir():
+        result["catalog"]["archives_bytes"] = sum(
+            p.stat().st_size for p in archives.rglob("*") if p.is_file()
+        )
     if layout.catalog.is_file():
         try:
             conn = sqlite3.connect(
