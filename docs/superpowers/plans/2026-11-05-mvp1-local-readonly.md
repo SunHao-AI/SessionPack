@@ -2256,6 +2256,20 @@ def test_summary_dedupes_learned_and_sorts_files() -> None:
     assert data["latest_outcome"] == "通过"
 
 
+def test_extract_file_mentions_strips_absolute_roots() -> None:
+    texts = [
+        r"改 E:\Workplace\SessionPack\sessionpack\summary.py",
+        "改 /home/dev/repo/main.py",
+        r"改 D:\repo\src\a.py 和 ./tools/b.py",
+    ]
+    assert summary.extract_file_mentions(texts) == [
+        "a.py",
+        "main.py",
+        "summary.py",
+        "tools/b.py",
+    ]
+
+
 def test_export_session_writes_markdown_and_json(filled_db: Path, tmp_path: Path) -> None:
     conn = catalog.connect(filled_db)
     out = tmp_path / "out"
@@ -2288,7 +2302,7 @@ def test_export_unknown_session_raises(filled_db: Path, tmp_path: Path) -> None:
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `python -m pytest tests/test_summary.py -v`
-Expected: FAIL，`ModuleNotFoundError: No module named 'sessionpack.summary'`
+Expected: FAIL，`ImportError: cannot import name 'export' from 'sessionpack'`（`from sessionpack import catalog, export, summary` 按名字表解析，`export` 先于 `summary` 触发；模块缺失即可）
 
 - [ ] **Step 3: 写实现**
 
@@ -2299,9 +2313,11 @@ from __future__ import annotations
 import re
 
 FILE_RE = re.compile(
-    r"[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|toml|ya?ml|css|html)\b",
+    r"(?:[A-Za-z]:[/\\])?[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|toml|ya?ml|css|html)\b",
     re.IGNORECASE,
 )
+
+ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|[/\\])")
 
 
 def split_list(value: str | None) -> list[str]:
@@ -2315,7 +2331,9 @@ def extract_file_mentions(texts: list[str]) -> list[str]:
     for text in texts:
         for match in FILE_RE.findall(text or ""):
             normalized = match.replace("\\", "/")
-            if normalized.startswith("./"):
+            if ABSOLUTE_RE.match(match):
+                normalized = normalized.rsplit("/", 1)[-1]
+            while normalized.startswith("./"):
                 normalized = normalized[2:]
             found.add(normalized)
     return sorted(found)
@@ -2482,7 +2500,7 @@ def export_all(
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python -m pytest tests/test_summary.py -v`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: 提交**
 
