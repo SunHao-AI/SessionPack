@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .scratch/
 .screenshots/
+.superpowers/
 .tmp/
 *.log
 
