@@ -199,6 +199,11 @@ def _fts_expr(term: str) -> str:
     return '"' + term.replace('"', '""') + '"'
 
 
+def _like(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def search_messages(
     conn: sqlite3.Connection, term: str, limit: int = 50
 ) -> list[sqlite3.Row]:
@@ -217,8 +222,9 @@ def search_messages(
         except sqlite3.OperationalError:
             pass
     return conn.execute(
-        "SELECT session_id, message_id, body FROM messages WHERE body LIKE ? LIMIT ?",
-        (f"%{term}%", limit),
+        "SELECT session_id, message_id, body FROM messages"
+        " WHERE body LIKE ? ESCAPE '\\' LIMIT ?",
+        (_like(term), limit),
     ).fetchall()
 
 
@@ -256,10 +262,11 @@ def list_sessions(
             params.append(_fts_expr(term))
         else:
             clauses.append(
-                "(s.title LIKE ? OR s.summary LIKE ? OR s.session_id IN"
-                " (SELECT session_id FROM messages WHERE body LIKE ?))"
+                "(s.title LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\'"
+                " OR s.session_id IN (SELECT session_id FROM messages"
+                " WHERE body LIKE ? ESCAPE '\\'))"
             )
-            params.extend([f"%{term}%"] * 3)
+            params.extend([_like(term)] * 3)
     sql = (
         "SELECT s.*, p.display_name FROM sessions s"
         " LEFT JOIN projects p ON p.project_id = s.project_id"

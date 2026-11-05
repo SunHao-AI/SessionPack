@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sessionpack import archive, catalog
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 from sessionpack.server import create_server
@@ -104,3 +105,30 @@ def test_unknown_route_returns_404(base_url: str) -> None:
     with pytest.raises(urllib.error.HTTPError) as exc:
         _get(base_url + "/nope")
     assert exc.value.code == 404
+
+
+def test_archive_to_serve_search_roundtrip(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    conn = catalog.connect(db)
+    project = catalog.get_projects(conn)[0]
+    built = archive.build_archive(conn, tmp_path / "a", project["project_id"])
+    fresh_path = tmp_path / "fresh.sqlite"
+    fresh = catalog.connect(fresh_path)
+    catalog.init_schema(fresh)
+    archive.import_archive(fresh, built.path)
+    srv = create_server(fresh_path, port=0, token="test-token")
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        status, body = _get(f"{base}/api/sessions?q=sha256", token="test-token")
+        assert status == 200
+        ids = {s["session_id"] for s in json.loads(body)["sessions"]}
+        assert "a" * 24 in ids
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)

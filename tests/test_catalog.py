@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from sessionpack import catalog, export
+from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.importer import import_source
 from sessionpack.model import MessageRecord, TopicRecord
 
 
@@ -115,3 +117,31 @@ def test_export_session_rejects_trailing_newline(tmp_path: Path) -> None:
     catalog.upsert_message(conn, _msg("正文"))
     with pytest.raises(ValueError):
         export.export_session(conn, "a" * 24 + "\n", tmp_path / "out")
+
+
+@pytest.fixture
+def filled_db_conn(memory_tree: Path, tmp_path: Path):
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    return catalog.connect(db)
+
+
+def test_like_wildcards_are_literal(filled_db_conn, tmp_path) -> None:
+    conn = filled_db_conn
+    # 库内已有会话正文不含 "%"；搜索字面 "%" 不应命中任何消息
+    assert catalog.search_messages(conn, "%") == []
+    assert catalog.list_sessions(conn, q="%") == []
+
+
+def test_list_sessions_source_and_date_filters(filled_db_conn) -> None:
+    conn = filled_db_conn
+    all_rows = catalog.list_sessions(conn)
+    assert catalog.list_sessions(conn, source_kind="trae-memory") == all_rows
+    assert catalog.list_sessions(conn, source_kind="none") == []
+    later = catalog.list_sessions(conn, date_from="2026-01-02")
+    earlier = catalog.list_sessions(conn, date_to="2026-01-01")
+    assert {r["session_id"] for r in later} != {r["session_id"] for r in earlier}
+    assert later and earlier
+    assert catalog.list_sessions(
+        conn, date_from="2026-01-02", date_to="2026-01-02"
+    ) == later

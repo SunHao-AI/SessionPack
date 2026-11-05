@@ -131,6 +131,8 @@ def test_import_archive_roundtrip(filled_db: Path, tmp_path: Path) -> None:
     again = archive.import_archive(fresh, built.path)
     assert again.messages_inserted == 0
     assert catalog.stats(fresh)["messages"] == 2
+    hits = catalog.search_messages(fresh, "校验归档")
+    assert any(h["session_id"] == SID for h in hits)
 
 
 def test_import_refuses_tampered_archive(filled_db: Path, tmp_path: Path) -> None:
