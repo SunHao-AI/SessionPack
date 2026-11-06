@@ -54,13 +54,18 @@ BASELINE: set[str] = set()
 def module_of(rel: str) -> tuple[str | None, str | None]:
     """'sessionpack/importer.py' -> ('importer', None)；
     'sessionpack/adapters/trae_memory.py' -> ('adapters', 'trae_memory')；
-    'sessionpack/__init__.py' -> (None, None)。"""
+    'sessionpack/cli/__init__.py' -> ('cli', None)（子包门面归到所属包本身）；
+    'sessionpack/__init__.py' -> (None, None)（顶层门面不属于任何模块）。"""
     parts = rel.removesuffix(".py").split("/")
     if parts[0] != "sessionpack" or len(parts) < 2:
         return None, None
     head = parts[1]
     if head == "__init__":
         return None, None
+    if parts[-1] == "__init__":
+        # 子包门面：按所属包的层参与分层检查，不留 '__init__' 这个
+        # 假子模块名（否则会与前缀键查找、跨包同名规则互相干扰）。
+        return head, None
     if len(parts) == 2:
         return head, None
     if head == "adapters":

@@ -162,6 +162,22 @@ def test_submodule_without_entry_falls_back_to_own_package(monkeypatch) -> None:
     assert found == []
 
 
+def test_subpackage_facade_is_layer_checked() -> None:
+    """子包门面 __init__.py 按所属包的层参与分层检查（不得整包免检）。"""
+    # 门面归一到所属包本身（子模块位留空），层级取包层号
+    assert lint_imports.module_of("sessionpack/cli/__init__.py") == ("cli", None)
+    assert lint_imports.layer("sessionpack/cli/__init__.py") == 4
+    # catalog(L2) 门面反向依赖 archive(L3)：必须点出
+    found = lint_imports.check_source(
+        "from sessionpack import archive\n", "sessionpack/catalog/__init__.py")
+    assert any("E_LAYER" in item and "L2 -> L3" in item for item in found)
+    # 顶层门面 sessionpack/__init__.py 不属于任何模块，保持不检
+    assert lint_imports.module_of("sessionpack/__init__.py") == (None, None)
+    assert lint_imports.check_source(
+        "from sessionpack import archive, cli\n",
+        "sessionpack/__init__.py") == []
+
+
 def test_repo_tree_has_no_unmapped_warnings(capsys) -> None:
     """全仓实跑不得出现 W_UNMAPPED：所有子模块都已登记 LAYER_OF，
     顶层门面的 dunder 符号（__version__）不构成分层边。"""
