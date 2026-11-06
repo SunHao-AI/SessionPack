@@ -61,7 +61,7 @@ def create_server(
                 # compare_digest 拒绝含非 ASCII 的 str；按未授权处理而非崩溃
                 return False
 
-        def _loopback_ok(self, parsed) -> bool:
+        def _loopback_ok(self) -> bool:
             origin = self.headers.get("Origin")
             if origin:
                 host = urlparse(origin).hostname
@@ -79,7 +79,7 @@ def create_server(
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
-            if not self._loopback_ok(parsed):
+            if not self._loopback_ok():
                 self._json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
                 return
             path = parsed.path.rstrip("/") or "/"
@@ -142,7 +142,8 @@ def create_server(
                     payload = text.encode("utf-8")
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type",
-                                     "application/json" if fmt == "json" else "text/markdown")
+                                     "application/json; charset=utf-8"
+                                     if fmt == "json" else "text/markdown; charset=utf-8")
                     self.send_header("Content-Length", str(len(payload)))
                     self.send_header("Content-Disposition",
                                      f'attachment; filename="{session_id}.{suffix}"')

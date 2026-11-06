@@ -187,3 +187,14 @@ def test_archive_to_serve_search_roundtrip(
         srv.shutdown()
         srv.server_close()
         thread.join(timeout=5)
+
+
+def test_export_session_content_type_utf8(base_url: str) -> None:
+    request = urllib.request.Request(
+        base_url + "/api/sessions/" + "a" * 24 + "/export?format=markdown"
+    )
+    request.add_header("X-Token", "test-token")
+    with urllib.request.urlopen(request, timeout=5) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert response.read().decode("utf-8")
