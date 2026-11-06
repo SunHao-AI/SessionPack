@@ -2,8 +2,9 @@ import re
 import shutil
 from pathlib import Path
 
-from sessionpack import archive, catalog, sync
+from sessionpack import archive, catalog, export, sync
 from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.cli import main
 from sessionpack.importer import import_source
 
 
@@ -176,3 +177,37 @@ def test_pull_error_text_sanitized(memory_tree: Path, tmp_path: Path,
     assert "C:\\Users" not in " ".join(result.errors)
     assert "<路径>" in " ".join(result.errors)
     conn.close()
+
+
+def test_two_device_sync_roundtrip(memory_tree: Path, tmp_path: Path) -> None:
+    """规格验收口径：两个 data-root + 一个共享目录完成 push → pull → 检索 → 导出一致。"""
+    dev_a = tmp_path / "device-a"
+    dev_b = tmp_path / "device-b"
+    share = tmp_path / "share"
+
+    # 设备 A：导入 + 生成归档包 + 推送
+    assert main(["import", "--memory-root", str(memory_tree),
+                 "--data-dir", str(dev_a)]) == 0
+    assert main(["export", "--data-dir", str(dev_a), "--all", "--archive",
+                 "--out", str(dev_a / "archives")]) == 0
+    assert main(["push", "--dir", str(share), "--data-dir", str(dev_a)]) == 0
+
+    # 设备 B：拉取（自动复制 + 导入）
+    assert main(["pull", "--dir", str(share), "--data-dir", str(dev_b)]) == 0
+
+    conn_a = catalog.connect(dev_a / "catalog.sqlite")
+    conn_b = catalog.connect(dev_b / "catalog.sqlite")
+    try:
+        project = catalog.get_projects(conn_a)[0]
+        # B 可检索：与 test_server.py 同口径，用 memory_tree 中已知关键词 "sha256"
+        assert catalog.search_messages(conn_b, "sha256")
+        assert catalog.stats(conn_b)["messages"] == catalog.stats(conn_a)["messages"]
+        # 导出与 A 逐字节一致
+        exp_a = export.export_project(conn_a, project["project_id"], tmp_path / "exp-a")
+        exp_b = export.export_project(conn_b, project["project_id"], tmp_path / "exp-b")
+        assert [p.name for p in exp_a.paths] == [p.name for p in exp_b.paths]
+        for left, right in zip(exp_a.paths, exp_b.paths):
+            assert left.read_bytes() == right.read_bytes()
+    finally:
+        conn_a.close()
+        conn_b.close()
