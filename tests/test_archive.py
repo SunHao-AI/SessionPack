@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -302,3 +303,52 @@ def test_build_failure_leaves_no_temp_file(
     assert [p.name for p in out_dir.iterdir()] == []
     assert list(out_dir.glob(".tmp-*.zip")) == []
 
+
+def test_zip_unreadable_detail_omits_absolute_path(
+    filled_db: Path, tmp_path: Path, monkeypatch
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+
+    def boom(*args, **kwargs):
+        error = OSError(2, "No such file or directory")
+        error.filename = str(filled_db)
+        raise error
+
+    monkeypatch.setattr(archive.zipfile, "ZipFile", boom)
+    result = archive.verify_archive(built.path)
+    codes = {issue.code: issue.detail for issue in result.issues}
+    assert "E_ZIP_UNREADABLE" in codes
+    assert str(filled_db).lower() not in codes["E_ZIP_UNREADABLE"].lower()
+    assert "[Errno" not in codes["E_ZIP_UNREADABLE"]
+
+
+def test_import_failed_detail_omits_absolute_path(
+    filled_db: Path, tmp_path: Path, monkeypatch
+) -> None:
+    conn = catalog.connect(filled_db)
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA")
+
+    def boom(db_conn, record):
+        raise sqlite3.OperationalError(
+            f"unable to open database file: {filled_db}"
+        )
+
+    monkeypatch.setattr(archive.catalog, "upsert_message", boom)
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    with pytest.raises(archive.ArchiveError) as caught:
+        archive.import_archive(fresh, built.path)
+    codes = {issue.code: issue.detail for issue in caught.value.issues}
+    assert "E_IMPORT_FAILED" in codes
+    assert str(filled_db).lower() not in codes["E_IMPORT_FAILED"].lower()
+
+
+def test_failure_text_keeps_plain_message(tmp_path: Path) -> None:
+    assert (
+        archive._failure_text(zipfile.BadZipFile("File is not a zip file"))
+        == "File is not a zip file"
+    )
+    probe = tmp_path / "probe.sqlite"
+    leaked = archive._failure_text(ValueError(f"bad value at {probe}"))
+    assert "<路径>" in leaked and str(probe).lower() not in leaked.lower()

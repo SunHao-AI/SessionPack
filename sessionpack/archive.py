@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -57,6 +58,19 @@ class ArchiveError(RuntimeError):
     def __init__(self, issues: tuple[VerifyIssue, ...] | list[VerifyIssue]) -> None:
         self.issues = tuple(issues)
         super().__init__("; ".join(f"{i.code}: {i.detail}" for i in self.issues))
+
+
+_PATH_TEXT_RE = re.compile(r"[A-Za-z]:[\\/][^\s\"']*|/(?:Users|home|var|tmp)[^\s\"']*")
+
+
+def _failure_text(exc: BaseException, limit: int = 60) -> str:
+    if isinstance(exc, OSError) and exc.strerror:
+        text = exc.strerror
+        if exc.filename:
+            text += "（文件位于数据目录内）"
+    else:
+        text = str(exc)
+    return _PATH_TEXT_RE.sub("<路径>", text)[:limit]
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -235,7 +249,8 @@ def verify_archive(path: Path) -> VerifyResult:
         bundle = zipfile.ZipFile(path)
     except (zipfile.BadZipFile, OSError) as exc:
         return VerifyResult(path, False,
-                            (VerifyIssue("E_ZIP_UNREADABLE", str(exc)[:120]),), None)
+                            (VerifyIssue("E_ZIP_UNREADABLE",
+                                         _failure_text(exc, 120)),), None)
     issues: list[VerifyIssue] = []
     with bundle:
         names = bundle.namelist()
@@ -247,7 +262,8 @@ def verify_archive(path: Path) -> VerifyResult:
             manifest = json.loads(bundle.read(MANIFEST_NAME).decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
             return VerifyResult(path, False,
-                                (VerifyIssue("E_MANIFEST_INVALID", str(exc)[:120]),), None)
+                                (VerifyIssue("E_MANIFEST_INVALID",
+                                             _failure_text(exc, 120)),), None)
         if not isinstance(manifest, dict):
             return VerifyResult(path, False,
                                 (VerifyIssue("E_MANIFEST_INVALID", "manifest 顶层必须是对象"),),
@@ -409,12 +425,12 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
             "UPDATE import_runs SET finished_at=?, result=?, warnings_json=?"
             " WHERE run_id=?",
             (datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "failed",
-             json.dumps({"error": f"{current}: {str(exc)[:60]}"}, ensure_ascii=False),
+             json.dumps({"error": f"{current}: {_failure_text(exc)}"}, ensure_ascii=False),
              run_id),
         )
         conn.commit()
         raise ArchiveError(
-            [VerifyIssue("E_IMPORT_FAILED", f"{current}: {str(exc)[:60]}")]) from exc
+            [VerifyIssue("E_IMPORT_FAILED", f"{current}: {_failure_text(exc)}")]) from exc
     return ArchiveImportResult(
         archive_id=manifest["archive_id"],
         sessions=sessions,
