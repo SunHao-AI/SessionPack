@@ -96,7 +96,8 @@ def check_source(src: str, rel: str) -> list[str]:
             amod = _abs_from_import(node, pkg)
             # `from sessionpack import X` / `from . import X`：X 是子模块，
             # 名字归属到 sessionpack.X 而非包本身，否则 `X._y` 检不出来。
-            is_pkg_edge = amod == pkg
+            # 顶层包门面 sessionpack 对所有深度的子包同样适用。
+            is_pkg_edge = amod in (pkg, "sessionpack")
             for a in node.names:
                 local = a.asname or a.name
                 if _is_private(a.name):
@@ -139,7 +140,8 @@ def check_source(src: str, rel: str) -> list[str]:
             # `from pkg import X` / `from . import X` 的边指向子模块 X；
             # `from pkg.sub import name` 的边就是 pkg.sub 本身（不要拼成
             # pkg.sub.name，否则目标模块被符号名遮蔽，层级边全部漏报）。
-            if amod == pkg:
+            # 顶层包门面对子包文件（pkg=sessionpack.archive 等）同样适用。
+            if amod in (pkg, "sessionpack"):
                 mods = [f"{amod}.{a.name}" for a in node.names]
             else:
                 mods = [amod]

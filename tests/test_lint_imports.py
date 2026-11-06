@@ -71,6 +71,29 @@ def test_layer_edge_from_module_level_import_not_shadowed_by_symbol():
     assert any("E_LAYER" in o for o in out)
 
 
+def test_subpackage_facade_import_still_checked():
+    # 子包文件（pkg=sessionpack.archive）经顶层门面 `from sessionpack import X`
+    # 导入高层模块：E_LAYER 与 E_PRIVATE 均不得因 pkg!=sessionpack 而漏报。
+    out = lint_imports.check_source(
+        "from sessionpack import server\n", "sessionpack/archive/install.py")
+    assert any("E_LAYER" in o for o in out)
+    src = "from sessionpack import catalog\ncatalog._priv(p)\n"
+    out2 = lint_imports.check_source(src, "sessionpack/archive/install.py")
+    assert any("E_PRIVATE" in o for o in out2)
+    out3 = lint_imports.check_source(src, "sessionpack/adapters/trae_memory.py")
+    assert any("E_PRIVATE" in o for o in out3)
+
+
+def test_subpackage_facade_import_low_layer_ok():
+    # 子包经门面导入低层合规；dunder 门面名不误报私有。
+    assert lint_imports.check_source(
+        "from sessionpack import catalog\n",
+        "sessionpack/archive/build.py") == []
+    assert lint_imports.check_source(
+        "from sessionpack import __version__\nv = __version__\n",
+        "sessionpack/archive/install.py") == []
+
+
 def test_check_tree_finds_baseline_violations_on_repo():
     root = Path(__file__).resolve().parents[1]
     found = set(lint_imports.check_tree(root))
