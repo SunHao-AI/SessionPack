@@ -107,6 +107,17 @@ def test_subpackage_facade_import_low_layer_ok():
         "sessionpack/archive/install.py") == []
 
 
+def test_import_alias_escape_is_private_violation() -> None:
+    """import sessionpack.x._m as alias 也须被 E_PRIVATE 拦住。
+
+    用例刻意只调用公开属性 load()，确保红点来自「导入语句本身触到私有模块」，
+    而不是被后续的私有属性规则顺带抓到。
+    """
+    src = "import sessionpack.catalog._helper as h\n\nh.load()\n"
+    found = lint_imports.check_source(src, "sessionpack/cli/scratch.py")
+    assert any("E_PRIVATE" in item for item in found)
+
+
 def test_check_tree_finds_baseline_violations_on_repo():
     root = Path(__file__).resolve().parents[1]
     found = set(lint_imports.check_tree(root))

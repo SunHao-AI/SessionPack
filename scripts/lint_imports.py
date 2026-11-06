@@ -107,6 +107,13 @@ def check_source(src: str, rel: str) -> list[str]:
         if isinstance(node, ast.Import):
             for a in node.names:
                 if a.name.startswith("sessionpack"):
+                    # 别名式导入同样能触到私有模块：import sessionpack.a._b as x
+                    segments = a.name.split(".")[1:]
+                    hit = next((s for s in segments if _is_private(s)), None)
+                    if hit is not None:
+                        out.append(
+                            f"{rel}:{node.lineno}: E_PRIVATE 'import' pulls "
+                            f"private '{hit}' from '{a.name}'")
                     imported_names[a.asname or a.name.split(".")[0]] = a.name
         elif isinstance(node, ast.ImportFrom):
             amod = _abs_from_import(node, pkg)
