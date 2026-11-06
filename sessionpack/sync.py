@@ -71,3 +71,50 @@ def push_archives(archives_dir: Path, sync_dir: Path,
     return SyncResult(pushed=len(pushed), skipped_existing=existing,
                       skipped_unverified=tuple(unverified),
                       bytes=total, errors=tuple(errors))
+
+
+def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
+    archives_dir = Path(archives_dir)
+    pulled = 0
+    existing = 0
+    invalid: list[str] = []
+    errors: list[str] = []
+    sessions_added = 0
+    messages_added = 0
+    total = 0
+    local_ids = {tail for p in archives_dir.glob("*.zip")
+                 if (tail := _id_tail(p.name))}
+    for src in sorted(Path(sync_dir).glob("*.zip")):
+        tail = _id_tail(src.name)
+        if tail and tail in local_ids:
+            existing += 1
+            continue
+        check = archive.verify_archive(src)
+        if not check.ok:
+            codes = ", ".join(issue.code for issue in check.issues)
+            invalid.append(f"{src.name}: {codes}")
+            continue
+        size = src.stat().st_size
+        dest = archives_dir / src.name
+        try:
+            _atomic_copy(src, dest)
+        except OSError as exc:
+            errors.append(f"{src.name}: {archive._failure_text(exc)}")
+            continue
+        try:
+            imported = archive.import_archive(conn, dest)
+        except (archive.ArchiveError, OSError) as exc:
+            errors.append(f"{src.name}: 已复制但导入失败 "
+                          f"{archive._failure_text(exc)}")
+            continue
+        pulled += 1
+        total += size
+        sessions_added += imported.sessions_created
+        messages_added += imported.messages_inserted
+        if tail:
+            local_ids.add(tail)
+    return SyncResult(pulled=pulled, skipped_existing=existing,
+                      skipped_invalid=tuple(invalid),
+                      sessions_added=sessions_added,
+                      messages_added=messages_added,
+                      bytes=total, errors=tuple(errors))
