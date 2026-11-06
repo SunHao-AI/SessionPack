@@ -40,7 +40,7 @@ def _message_payload(message: dict) -> dict:
     }
 
 
-def _render(session: dict, messages: list[dict], fmt: str) -> str:
+def render(session: dict, messages: list[dict], fmt: str) -> str:
     if fmt == "json":
         payload = {
             "summary": build_summary(session, messages),
@@ -63,7 +63,7 @@ def export_session(
     messages = catalog.get_messages(conn, session_id)
     suffix = "json" if fmt == "json" else "md"
     path = Path(dest_dir) / f"{session_id}.{suffix}"
-    _atomic_write(path, _render(session, messages, fmt))
+    _atomic_write(path, render(session, messages, fmt))
     return path, len(messages)
 
 

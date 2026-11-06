@@ -141,7 +141,7 @@ def create_server(
                         return
                     messages = catalog.get_messages(conn, session_id)
                     try:
-                        text = export._render(session, messages, fmt)
+                        text = export.render(session, messages, fmt)
                     except ValueError:
                         self._json(HTTPStatus.BAD_REQUEST, {"error": "bad format"})
                         return

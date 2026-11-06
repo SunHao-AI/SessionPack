@@ -41,7 +41,6 @@ BASELINE: set[str] = {
     "sessionpack/importer.py:189: E_SQL raw SQL write on managed table (only catalog.py allowed)",
     "sessionpack/importer.py:205: E_SQL raw SQL write on managed table (only catalog.py allowed)",
     "sessionpack/importer.py:294: E_SQL raw SQL write on managed table (only catalog.py allowed)",
-    "sessionpack/server.py:144: E_PRIVATE module attribute '_render' called on 'sessionpack.export'",
     "sessionpack/sync.py:118: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
     "sessionpack/sync.py:124: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
     "sessionpack/sync.py:74: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
