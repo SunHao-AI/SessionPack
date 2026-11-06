@@ -144,6 +144,24 @@ def test_private_attr_on_nested_attribute_chain_is_caught() -> None:
     assert any("E_PRIVATE" in item and "_write_row" in item for item in found)
 
 
+def test_submodule_layer_is_scoped_to_owning_package(monkeypatch) -> None:
+    """子模块层级必须以包为前缀，不能被别的包的同名子模块串扰。"""
+    # 新包 export 登记为 L1，其 write.py 与 catalog.write 同名
+    monkeypatch.setitem(lint_imports.LAYER_OF, "export", 1)
+    # export(L1) -> catalog(L2) 是向上依赖，必须报；旧扁平键 write=2 会误放行
+    found = lint_imports.check_source(
+        "from sessionpack import catalog\n", "sessionpack/export/write.py")
+    assert any("E_LAYER" in item for item in found)
+
+
+def test_submodule_without_entry_falls_back_to_own_package(monkeypatch) -> None:
+    """未显式登记的子模块回落到自己包的层，不受同名他包子模块影响。"""
+    # server 为 L4，其 read.py 与 catalog.read(L2) 同名；server -> archive(L3) 合法
+    found = lint_imports.check_source(
+        "from sessionpack import archive\n", "sessionpack/server/read.py")
+    assert found == []
+
+
 def test_repo_tree_has_no_unmapped_warnings(capsys) -> None:
     """全仓实跑不得出现 W_UNMAPPED：所有子模块都已登记 LAYER_OF，
     顶层门面的 dunder 符号（__version__）不构成分层边。"""

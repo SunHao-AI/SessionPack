@@ -17,23 +17,21 @@ PKG_DIR = ROOT / "sessionpack"
 BASELINE_FILE = Path(__file__)
 
 # §3.2 分层规则表：数字越大层级越高；同层允许。
+# 顶层模块与包本身用裸名；包内子模块一律用 "包名.子模块名" 前缀键，
+# 避免不同包的同名子模块（catalog.read / server.read）互相串扰。
 LAYER_OF: dict[str, int] = {
     "model": 0, "paths": 0, "audit": 0, "mem": 0, "summary": 0,
     "config": 0, "textutil": 0,
     "adapters": 1,
     "catalog": 2,
-    "conn": 2,
-    "read": 2,
-    "write": 2,
+    "catalog.conn": 2, "catalog.read": 2, "catalog.write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
     "cli": 4, "server": 4,
     # python -m sessionpack 的入口薄壳，与 cli 同为最高消费层
     "__main__": 4,
-    "output": 0,
-    "common": 4,
-    "parser": 4,
-    "read_cmds": 4,
-    "write_cmds": 4,
+    "cli.common": 4, "cli.parser": 4, "cli.read_cmds": 4, "cli.write_cmds": 4,
+    # cli/output.py 只依赖 L0（渲染层被各层共用），刻意下沉为 L0
+    "cli.output": 0,
 }
 
 SQL_WRITE = re.compile(
@@ -70,6 +68,19 @@ def module_of(rel: str) -> tuple[str | None, str | None]:
     return head, parts[-1]  # 未来其他子包：首段为包名
 
 
+def _layer_of(mod: str, sub: str | None) -> int | None:
+    """(包名, 子模块名) -> 层号。
+
+    子模块先查 "包名.子模块名" 前缀键；查不到再回落到包自身的层号
+    （adapters 各 adapter、未来新增子模块都走这条回落路径）。
+    """
+    if sub is not None:
+        hit = LAYER_OF.get(f"{mod}.{sub}")
+        if hit is not None:
+            return hit
+    return LAYER_OF.get(mod)
+
+
 def layer(rel_or_mod: str) -> int | None:
     """模块层级；None 只表示"该路径不是受检模块"（顶层门面/包外路径）。
 
@@ -79,7 +90,7 @@ def layer(rel_or_mod: str) -> int | None:
     mod, sub = module_of(rel_or_mod)
     if mod is None:
         return None
-    return LAYER_OF.get(sub or mod, LAYER_OF.get(mod))
+    return _layer_of(mod, sub)
 
 
 def _abs_from_import(node, package: str) -> str:
