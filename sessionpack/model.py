@@ -49,6 +49,7 @@ class SourceFile:
     project_id: str
     raw_project_dir: str
     kind: FileKind
+    session_id: str = ""
 
 
 @dataclass(frozen=True)

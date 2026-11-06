@@ -70,9 +70,11 @@ class TraeMemoryAdapter:
             if path.name == "topics.md":
                 raw = path.parent.parent.name
                 yield SourceFile(path, canonical_project_dir(raw), raw, "topics")
-            elif SESSION_FILE_RE.match(path.name):
+            elif (match := SESSION_FILE_RE.match(path.name)):
                 raw = path.parent.parent.name
-                yield SourceFile(path, canonical_project_dir(raw), raw, "messages")
+                yield SourceFile(
+                    path, canonical_project_dir(raw), raw, "messages",
+                    session_id=match.group(1))
 
     def inspect(self, root: Path) -> InspectResult:
         declared = self.declared_paths(root)
@@ -109,6 +111,9 @@ class TraeMemoryAdapter:
             date_max=dates[-1] if dates else None,
             notes=tuple(notes),
         )
+
+    def display_name(self, canonical_project_id: str) -> str:
+        return project_display_name(canonical_project_id)
 
     def _session_id(self, ref: SourceFile) -> str:
         match = SESSION_FILE_RE.match(ref.path.name)

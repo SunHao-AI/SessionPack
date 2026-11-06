@@ -9,7 +9,6 @@ from pathlib import Path
 
 from sessionpack import catalog
 from sessionpack.adapters.base import MemoryAdapter
-from sessionpack.adapters.trae_memory import SESSION_FILE_RE, project_display_name
 from sessionpack.mem import peak_rss_mb
 from sessionpack.model import ProjectRecord, SourceFile, TopicRecord
 
@@ -125,7 +124,7 @@ def import_source(
     for ref in files:
         projects[ref.project_id] = ProjectRecord(
             project_id=ref.project_id,
-            display_name=project_display_name(ref.project_id),
+            display_name=adapter.display_name(ref.project_id),
             local_path_hint=ref.raw_project_dir,
             source_kind=adapter.source_kind,
         )
@@ -222,9 +221,8 @@ def import_source(
             continue
         if state.done and not reparse:
             stats.files_skipped += 1
-            match = SESSION_FILE_RE.match(Path(state.rel).name)
-            if match:
-                touched.add(match.group(1))
+            if ref.session_id:
+                touched.add(ref.session_id)
             continue
         start_offset, start_seq = (0, 0) if reparse else (state.offset, state.rows)
         try:
