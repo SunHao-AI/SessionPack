@@ -193,12 +193,24 @@ def sql_violations(tree: ast.AST, rel: str) -> list[str]:
 
     豁免是文件级精确集合（conn.py 的 SCHEMA 建表 DDL、write.py 的增删改），
     catalog 其余文件（read.py/__init__.py）不豁免，保证只读承诺有守卫兜底。
+
+    docstring 只是说明性文字，先收集其节点 id 再跳过，避免「注释里提到
+    INSERT INTO」被判成违规。
     """
     if rel in SQL_WRITE_ALLOWED:
         return []
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
     out: list[str] = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docstrings
                 and SQL_WRITE.search(node.value)):
             out.append(f"{rel}:{node.lineno}: E_SQL raw SQL write on "
                        "managed table (only catalog conn/write allowed)")

@@ -118,6 +118,14 @@ def test_import_alias_escape_is_private_violation() -> None:
     assert any("E_PRIVATE" in item for item in found)
 
 
+def test_docstring_mentioning_write_is_not_sql_violation() -> None:
+    """docstring 里解释「禁止 INSERT」不该被判成裸 SQL 写入。"""
+    src = ('"""本模块不得写库：禁止 INSERT INTO messages。"""\n\n'
+           'VALUE = 1\n')
+    found = lint_imports.check_source(src, "sessionpack/export/anything.py")
+    assert found == []
+
+
 def test_check_tree_finds_baseline_violations_on_repo():
     root = Path(__file__).resolve().parents[1]
     found = set(lint_imports.check_tree(root))
