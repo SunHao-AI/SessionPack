@@ -32,15 +32,7 @@ SQL_WRITE = re.compile(
 )
 
 # 只减不增：修复一个删一行；禁止向其中新增条目来"解决"新违规。
-BASELINE: set[str] = {
-    "sessionpack/archive.py:364: E_SQL raw SQL write on managed table (only catalog.py allowed)",
-    "sessionpack/archive.py:417: E_SQL raw SQL write on managed table (only catalog.py allowed)",
-    "sessionpack/archive.py:426: E_SQL raw SQL write on managed table (only catalog.py allowed)",
-    "sessionpack/sync.py:118: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
-    "sessionpack/sync.py:124: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
-    "sessionpack/sync.py:74: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
-    "sessionpack/sync.py:80: E_PRIVATE module attribute '_failure_text' called on 'sessionpack.archive'",
-}
+BASELINE: set[str] = set()
 
 
 def module_of(rel: str) -> tuple[str | None, str | None]:
@@ -196,9 +188,12 @@ def check_tree(root: Path) -> list[str]:
 
 def _update_baseline(violations: set[str]) -> None:
     text = BASELINE_FILE.read_text(encoding="utf-8")
-    lines = "".join(f'    "{v}",\n' for v in sorted(violations))
-    new = re.sub(r"BASELINE: set\[str\] = \{\n.*?\n\}\n",
-                 f"BASELINE: set[str] = {{\n{lines}}}\n", text, count=1,
+    if violations:
+        body = "{\n" + "".join(f'    "{v}",\n' for v in sorted(violations)) + "}"
+    else:
+        body = "set()"
+    new = re.sub(r"BASELINE: set\[str\] = (?:\{\n.*?\n\}|set\(\))\n",
+                 f"BASELINE: set[str] = {body}\n", text, count=1,
                  flags=re.S)
     BASELINE_FILE.write_text(new, encoding="utf-8")
 

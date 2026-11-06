@@ -294,7 +294,7 @@ def test_build_failure_leaves_no_temp_file(
     conn = catalog.connect(filled_db)
     out_dir = tmp_path / "archives"
     monkeypatch.setattr(
-        archive, "verify_archive",
+        archive.verify, "verify_archive",
         lambda path: archive.VerifyResult(Path(path), False,
                                           (archive.VerifyIssue("E_STUB", "stub"),), None),
     )
@@ -315,7 +315,7 @@ def test_zip_unreadable_detail_omits_absolute_path(
         error.filename = str(filled_db)
         raise error
 
-    monkeypatch.setattr(archive.zipfile, "ZipFile", boom)
+    monkeypatch.setattr(archive.verify.zipfile, "ZipFile", boom)
     result = archive.verify_archive(built.path)
     codes = {issue.code: issue.detail for issue in result.issues}
     assert "E_ZIP_UNREADABLE" in codes
@@ -334,7 +334,7 @@ def test_import_failed_detail_omits_absolute_path(
             f"unable to open database file: {filled_db}"
         )
 
-    monkeypatch.setattr(archive.catalog, "upsert_message", boom)
+    monkeypatch.setattr(catalog, "upsert_message", boom)
     fresh = catalog.connect(tmp_path / "fresh.sqlite")
     catalog.init_schema(fresh)
     with pytest.raises(archive.ArchiveError) as caught:
@@ -346,10 +346,12 @@ def test_import_failed_detail_omits_absolute_path(
 
 
 def test_failure_text_keeps_plain_message(tmp_path: Path) -> None:
+    from sessionpack.textutil import failure_text
+
     assert (
-        archive._failure_text(zipfile.BadZipFile("File is not a zip file"))
+        failure_text(zipfile.BadZipFile("File is not a zip file"))
         == "File is not a zip file"
     )
     probe = tmp_path / "probe.sqlite"
-    leaked = archive._failure_text(ValueError(f"bad value at {probe}"))
+    leaked = failure_text(ValueError(f"bad value at {probe}"))
     assert "<路径>" in leaked and str(probe).lower() not in leaked.lower()

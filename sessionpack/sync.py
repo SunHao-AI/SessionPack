@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import archive
+from .textutil import failure_text
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
 _TEMP_PREFIXES = (".tmp-", ".build-")
@@ -71,13 +72,13 @@ def push_archives(archives_dir: Path, sync_dir: Path,
         try:
             size = src.stat().st_size
         except OSError as exc:
-            errors.append(f"{src.name}: {archive._failure_text(exc)}")
+            errors.append(f"{src.name}: {failure_text(exc)}")
             continue
         if not dry_run:
             try:
                 _atomic_copy(src, Path(sync_dir) / src.name)
             except OSError as exc:
-                errors.append(f"{src.name}: {archive._failure_text(exc)}")
+                errors.append(f"{src.name}: {failure_text(exc)}")
                 continue
         pushed.append(src.name)
         total += size
@@ -115,13 +116,13 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
             size = src.stat().st_size
             _atomic_copy(src, dest)
         except OSError as exc:
-            errors.append(f"{src.name}: {archive._failure_text(exc)}")
+            errors.append(f"{src.name}: {failure_text(exc)}")
             continue
         try:
             imported = archive.import_archive(conn, dest)
         except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
             errors.append(f"{src.name}: 已复制但导入失败 "
-                          f"{archive._failure_text(exc)}")
+                          f"{failure_text(exc)}")
             continue
         pulled += 1
         total += size
