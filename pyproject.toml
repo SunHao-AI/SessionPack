@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Trae 会话归档与同步：本地只读会话管理"
 requires-python = ">=3.11"
 dependencies = []
+license = "MIT"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
