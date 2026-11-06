@@ -7,8 +7,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive
-from .textutil import failure_text
+from sessionpack import archive
+from sessionpack.textutil import failure_text
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
 _TEMP_PREFIXES = (".tmp-", ".build-")

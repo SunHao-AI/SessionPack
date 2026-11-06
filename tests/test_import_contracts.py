@@ -44,3 +44,10 @@ def test_has_schema_comes_from_read_module() -> None:
     from sessionpack.catalog import read
 
     assert callable(read.has_schema)
+
+
+def test_server_validates_session_id_without_reexport() -> None:
+    """server 删除 SESSION_ID_RE 重导出后，非法 id 仍须被拒（行为回归）。"""
+    import sessionpack.server as server
+
+    assert not hasattr(server, "SESSION_ID_RE")

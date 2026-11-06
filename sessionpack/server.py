@@ -15,7 +15,6 @@ from sessionpack.paths import default_memory_root, ensure_layout
 from sessionpack.summary import build_summary
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-SESSION_ID_RE = catalog.SESSION_ID_RE
 PAGES = {"/": "index.html", "/session": "session.html", "/diagnostics": "diagnostics.html"}
 STATIC = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
@@ -159,7 +158,7 @@ def create_server(
                     return
                 if path.startswith("/api/sessions/"):
                     session_id = path.rsplit("/", 1)[-1]
-                    if not SESSION_ID_RE.fullmatch(session_id):
+                    if not catalog.SESSION_ID_RE.fullmatch(session_id):
                         self._json(HTTPStatus.NOT_FOUND, {"error": "会话 ID 非法"})
                         return
                     session = catalog.get_session(conn, session_id)
