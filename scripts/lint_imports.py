@@ -27,6 +27,11 @@ LAYER_OF: dict[str, int] = {
     "write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
     "cli": 4, "server": 4,
+    "output": 0,
+    "common": 4,
+    "parser": 4,
+    "read_cmds": 4,
+    "write_cmds": 4,
 }
 
 SQL_WRITE = re.compile(
