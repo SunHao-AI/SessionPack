@@ -34,6 +34,14 @@ SQL_WRITE = re.compile(
     r"|import_runs|import_files|message_fts)"
 )
 
+# E_SQL 精确豁免集合：以实跑探测确认的最小合法写文件集
+# （conn.py 含 SCHEMA 的 CREATE TABLE DDL 1 处，write.py 含写语句 15 处；
+# read.py/__init__.py 实测 0 处，不得加入本集合）。
+SQL_WRITE_ALLOWED = frozenset({
+    "sessionpack/catalog/conn.py",
+    "sessionpack/catalog/write.py",
+})
+
 # 只减不增：修复一个删一行；禁止向其中新增条目来"解决"新违规。
 BASELINE: set[str] = set()
 
@@ -169,15 +177,19 @@ def check_source(src: str, rel: str) -> list[str]:
 
 
 def sql_violations(tree: ast.AST, rel: str) -> list[str]:
-    """SQL 独占令：字符串字面量含受管表写语句，仅 catalog.py 允许。"""
-    if rel.startswith("sessionpack/catalog/"):
+    """SQL 独占令：字符串字面量含受管表写语句，仅 SQL_WRITE_ALLOWED 允许。
+
+    豁免是文件级精确集合（conn.py 的 SCHEMA 建表 DDL、write.py 的增删改），
+    catalog 其余文件（read.py/__init__.py）不豁免，保证只读承诺有守卫兜底。
+    """
+    if rel in SQL_WRITE_ALLOWED:
         return []
     out: list[str] = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and SQL_WRITE.search(node.value)):
             out.append(f"{rel}:{node.lineno}: E_SQL raw SQL write on "
-                       "managed table (only catalog.py allowed)")
+                       "managed table (only catalog conn/write allowed)")
     # SQL 常量可能被变量引用后传入 execute；AST 字面量检索对多段拼接
     # 字符串已在 f-string/常量折叠下可检，若发现漏网请改用 tokenize 全文扫描。
     return out

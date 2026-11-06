@@ -46,6 +46,19 @@ def test_sql_rule_ok_catalog_and_plain_select():
     assert lint_imports.check_source(src, "sessionpack/catalog/write.py") == []
     src2 = 'conn.execute("SELECT * FROM sessions WHERE project_id=?")\n'
     assert lint_imports.check_source(src2, "sessionpack/archive.py") == []
+    # conn.py 的 SCHEMA 建表 DDL 属合法豁免（CREATE TABLE projects 等）
+    src3 = 'SCHEMA = "CREATE TABLE IF NOT EXISTS projects (x)"\n'
+    assert lint_imports.check_source(src3, "sessionpack/catalog/conn.py") == []
+
+
+def test_sql_rule_hits_write_in_non_exempt_catalog_modules():
+    """豁免必须是文件级精确：只读子模块/门面里误写受管表写语句仍须报 E_SQL，
+    否则 read.py '只做 SELECT' 的承诺没有守卫兜底。"""
+    src = 'conn.execute("UPDATE sessions SET title=? WHERE session_id=?")\n'
+    out = lint_imports.check_source(src, "sessionpack/catalog/read.py")
+    assert any("E_SQL" in o for o in out), "read.py 不应豁免 E_SQL"
+    out2 = lint_imports.check_source(src, "sessionpack/catalog/__init__.py")
+    assert any("E_SQL" in o for o in out2), "catalog 门面不应豁免 E_SQL"
 
 
 def test_intra_package_and_relative_import_exempt():
