@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack import archive, catalog, config
+from sessionpack import archive, catalog, config, diagnostics
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 from sessionpack.server import create_server
@@ -205,7 +205,7 @@ def test_diagnostics_sync_section_unconfigured(base_url: str) -> None:
     data = json.loads(body)
     assert status == 200
     assert data["sync"] == {"configured": False, "dir": None, "exists": False,
-                            "archives": 0, "bytes": 0}
+                            "archives": 0, "bytes": 0, "warnings": []}
 
 
 def test_diagnostics_sync_section_configured(memory_tree: Path,

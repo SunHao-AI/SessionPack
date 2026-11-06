@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -31,8 +32,40 @@ def sync_dir(root: Path) -> Path | None:
     return Path(raw).expanduser()
 
 
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _dump_toml(data: dict) -> str:
+    """序列化已知形态：顶层标量 + 扁平值段（tomllib 只读，需手写输出）。"""
+    scalars = []
+    sections = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            body = "".join(f"{k} = {_toml_value(v)}\n" for k, v in value.items())
+            sections.append(f"[{key}]\n{body}")
+        else:
+            scalars.append(f"{key} = {_toml_value(value)}\n")
+    return "".join(scalars) + "".join(sections)
+
+
 def set_sync_dir(root: Path, directory: Path) -> None:
+    """合并式写回：保留既有其他配置段，原子替换（临时文件 + os.replace）。"""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    text = "[sync]\ndir = " + json.dumps(str(Path(directory)), ensure_ascii=False) + "\n"
-    (root / CONFIG_NAME).write_text(text, encoding="utf-8")
+    data, _ = load_config(root)
+    data = dict(data)
+    section = data.get("sync")
+    section = dict(section) if isinstance(section, dict) else {}
+    section["dir"] = str(Path(directory))
+    data["sync"] = section
+    path = root / CONFIG_NAME
+    tmp = root / (CONFIG_NAME + ".tmp")
+    tmp.write_text(_dump_toml(data), encoding="utf-8")
+    os.replace(tmp, path)

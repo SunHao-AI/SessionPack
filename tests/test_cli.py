@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 from sessionpack import catalog, cli, config
@@ -220,6 +221,19 @@ def test_doctor_reports_disk_sizes(memory_tree: Path, tmp_path: Path,
     assert report["catalog"]["archives_bytes"] == 0
 
 
+def test_doctor_sync_warnings_passthrough(memory_tree: Path, tmp_path: Path,
+                                          capsys) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "config.toml").write_text("[sync\ndir = ???\n", encoding="utf-8")
+    code = main(["doctor", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_dir), "--json"])
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["sync"]["configured"] is False
+    assert report["sync"]["warnings"]
+
+
 def _seed_archives(memory_tree: Path, data_dir: Path) -> None:
     main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
     code = main(["export", "--data-dir", str(data_dir), "--all",
@@ -266,6 +280,33 @@ def test_push_dir_remembers_config_and_pull_roundtrip(memory_tree: Path,
     assert payload["messages_added"] == 4
     assert not payload["errors"]
     assert config.sync_dir(dst) is None      # pull 不写配置
+
+
+def test_push_copy_error_returns_exit_error(memory_tree: Path, tmp_path: Path,
+                                            monkeypatch, capsys) -> None:
+    src = tmp_path / "src"
+    _seed_archives(memory_tree, src)
+    share = tmp_path / "share"
+
+    def boom(file_src, file_dst, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copy2", boom)
+    code = main(["push", "--dir", str(share), "--data-dir", str(src)])
+    assert code == 1
+    assert "推送失败" in capsys.readouterr().err
+    assert config.sync_dir(src) is None
+
+
+def test_push_relative_dir_resolved_before_config(memory_tree: Path,
+                                                  tmp_path: Path,
+                                                  monkeypatch) -> None:
+    src = tmp_path / "src"
+    _seed_archives(memory_tree, src)
+    monkeypatch.chdir(tmp_path)
+    code = main(["push", "--dir", "share", "--data-dir", str(src)])
+    assert code == 0
+    assert config.sync_dir(src) == tmp_path / "share"
 
 
 def test_push_dry_run_writes_nothing(memory_tree: Path, tmp_path: Path,

@@ -38,3 +38,25 @@ def test_set_sync_dir_non_bmp_path_roundtrip(tmp_path: Path) -> None:
     data, warnings = config.load_config(tmp_path)
     assert warnings == []
     assert data["sync"]["dir"] == str(target)
+
+
+def test_set_sync_dir_preserves_other_sections(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[other]\nname = "保留"\ncount = 3\nflag = true\n', encoding="utf-8")
+    target = tmp_path / "share"
+    config.set_sync_dir(tmp_path, target)
+    data, warnings = config.load_config(tmp_path)
+    assert warnings == []
+    assert data["sync"]["dir"] == str(target)
+    assert data["other"] == {"name": "保留", "count": 3, "flag": True}
+    assert not (tmp_path / "config.toml.tmp").exists()
+
+
+def test_set_sync_dir_updates_in_place(tmp_path: Path) -> None:
+    first = tmp_path / "share-a"
+    second = tmp_path / "share-b"
+    config.set_sync_dir(tmp_path, first)
+    config.set_sync_dir(tmp_path, second)
+    data, warnings = config.load_config(tmp_path)
+    assert warnings == []
+    assert data["sync"]["dir"] == str(second)

@@ -16,15 +16,20 @@ def private_db_path() -> Path:
 
 
 def _sync_section(root: Path) -> dict:
-    target = config.sync_dir(root)
+    data, warnings = config.load_config(root)
+    section = data.get("sync")
+    raw = section.get("dir") if isinstance(section, dict) else None
+    target = (Path(raw).expanduser()
+              if isinstance(raw, str) and raw else None)
     if target is None:
         return {"configured": False, "dir": None, "exists": False,
-                "archives": 0, "bytes": 0}
+                "archives": 0, "bytes": 0, "warnings": warnings}
     exists = target.is_dir()
     files = [p for p in target.glob("*.zip") if p.is_file()] if exists else []
     return {"configured": True, "dir": str(target), "exists": exists,
             "archives": len(files),
-            "bytes": sum(p.stat().st_size for p in files)}
+            "bytes": sum(p.stat().st_size for p in files),
+            "warnings": warnings}
 
 
 def collect(memory_root: Path, layout: Layout) -> dict:

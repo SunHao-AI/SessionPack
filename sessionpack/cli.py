@@ -301,7 +301,8 @@ def _cmd_verify(args) -> int:
 
 def _resolve_sync_dir(args, layout: Layout) -> Path | None:
     if args.dir:
-        return Path(args.dir).expanduser()
+        # 与 paths.resolve_data_dir 对齐：展开并解析为绝对路径后再落配置
+        return Path(args.dir).expanduser().resolve()
     return config.sync_dir(layout.root)
 
 

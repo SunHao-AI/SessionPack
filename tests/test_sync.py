@@ -102,6 +102,27 @@ def test_push_stat_failure_is_sanitized(memory_tree: Path, tmp_path: Path,
     assert "<路径>" in " ".join(result.errors)
 
 
+def test_push_dry_run_stat_failure_is_sanitized(memory_tree: Path,
+                                                tmp_path: Path,
+                                                monkeypatch) -> None:
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+
+    real_stat = Path.stat
+
+    def boom(self, *args, **kwargs):
+        if self.suffix == ".zip":
+            raise OSError("boom C:\\Users\\secret")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", boom)
+    result = sync.push_archives(src, share, dry_run=True)
+    assert result.pushed == 0
+    assert result.errors
+    assert "C:\\Users" not in " ".join(result.errors)
+    assert "<路径>" in " ".join(result.errors)
+
+
 def _fresh_conn(tmp_path: Path):
     conn = catalog.connect(tmp_path / "dst-catalog.sqlite")
     catalog.init_schema(conn)
@@ -196,6 +217,90 @@ def test_pull_error_text_sanitized(memory_tree: Path, tmp_path: Path,
     assert result.errors
     assert "C:\\Users" not in " ".join(result.errors)
     assert "<路径>" in " ".join(result.errors)
+    conn.close()
+
+
+def test_push_skips_temp_residue(memory_tree: Path, tmp_path: Path) -> None:
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    (src / ".tmp-good-2026-11-06-abcdef012345.zip").write_bytes(b"residue")
+    (src / ".build-x.zip").write_bytes(b"residue")
+    share = tmp_path / "share"
+    result = sync.push_archives(src, share)
+    assert result.pushed == len(built)
+    assert not result.errors
+    assert not result.skipped_unverified
+    assert not list(share.glob(".*"))
+
+
+def test_pull_skips_temp_residue_and_missing_dir(memory_tree: Path,
+                                                 tmp_path: Path) -> None:
+    share = _push_all(memory_tree, tmp_path)
+    (share / ".tmp-leftover-2026-11-06-abcdef012345.zip").write_bytes(b"residue")
+    dst = tmp_path / "dst-archives"
+    conn = _fresh_conn(tmp_path)
+    result = sync.pull_archives(dst, share, conn)
+    assert not result.errors
+    assert not result.skipped_invalid
+    assert not list(dst.glob(".*"))
+    conn.close()
+    (tmp_path / "empty").mkdir()
+    conn2 = _fresh_conn(tmp_path / "empty")
+    missing = sync.pull_archives(dst, tmp_path / "no-such-dir", conn2)
+    assert missing.pulled == 0
+    assert not missing.errors
+    conn2.close()
+
+
+def test_pull_temp_residue_in_local_not_dedup_key(memory_tree: Path,
+                                                  tmp_path: Path) -> None:
+    share = _push_all(memory_tree, tmp_path)
+    dst = tmp_path / "dst-archives"
+    dst.mkdir(parents=True)
+    first = sorted(p.name for p in share.glob("*.zip"))[0]
+    (dst / (".tmp-" + first)).write_bytes(b"")
+    conn = _fresh_conn(tmp_path)
+    result = sync.pull_archives(dst, share, conn)
+    assert result.pulled == len(list(share.glob("*.zip")))
+    assert not result.errors
+    conn.close()
+
+
+def test_pull_renames_stable_by_filename(memory_tree: Path,
+                                         tmp_path: Path) -> None:
+    """无 id12 尾巴的包（手工改名）：首轮复制导入，二轮按文件名判同跳过。"""
+    share = tmp_path / "share"
+    share.mkdir()
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    for p in src.glob("*.zip"):
+        shutil.copy2(p, share / "hand.zip")
+        break
+    dst = tmp_path / "dst-archives"
+    conn = _fresh_conn(tmp_path)
+    first = sync.pull_archives(dst, share, conn)
+    assert first.pulled == 1
+    assert not first.errors
+    again = sync.pull_archives(dst, share, conn)
+    assert again.pulled == 0
+    assert again.skipped_existing == 1
+    conn.close()
+
+
+def test_pull_copy_failure_leaves_no_tmp(memory_tree: Path, tmp_path: Path,
+                                         monkeypatch) -> None:
+    share = _push_all(memory_tree, tmp_path)
+    dst = tmp_path / "dst-archives"
+    conn = _fresh_conn(tmp_path)
+
+    def boom(file_src, file_dst, *args, **kwargs):
+        raise OSError("复制失败 at C:\\Users\\secret\\x.zip")
+
+    monkeypatch.setattr(shutil, "copy2", boom)
+    result = sync.pull_archives(dst, share, conn)
+    assert result.pulled == 0
+    assert result.errors
+    assert "C:\\Users" not in " ".join(result.errors)
+    assert "<路径>" in " ".join(result.errors)
+    assert not list(dst.glob(".tmp-*"))
     conn.close()
 
 

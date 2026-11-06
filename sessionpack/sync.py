@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import archive
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
+_TEMP_PREFIXES = (".tmp-", ".build-")
 
 
 @dataclass
@@ -29,6 +31,15 @@ def _id_tail(name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _scan_zips(directory: Path) -> list[Path]:
+    """目录内的归档包候选；跳过原子写强杀残留的 .tmp-/.build- 前缀文件。"""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    return sorted(p for p in directory.glob("*.zip")
+                  if not p.name.startswith(_TEMP_PREFIXES))
+
+
 def _atomic_copy(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / (".tmp-" + dest.name)
@@ -46,11 +57,8 @@ def push_archives(archives_dir: Path, sync_dir: Path,
     unverified: list[str] = []
     errors: list[str] = []
     total = 0
-    local = sorted(Path(archives_dir).glob("*.zip"))
-    remote_names = (
-        {p.name for p in Path(sync_dir).glob("*.zip")}
-        if Path(sync_dir).is_dir() else set()
-    )
+    local = _scan_zips(archives_dir)
+    remote_names = {p.name for p in _scan_zips(sync_dir)}
     for src in local:
         if src.name in remote_names:
             existing += 1
@@ -60,16 +68,14 @@ def push_archives(archives_dir: Path, sync_dir: Path,
             codes = ", ".join(issue.code for issue in check.issues)
             unverified.append(f"{src.name}: {codes}")
             continue
+        try:
+            size = src.stat().st_size
+        except OSError as exc:
+            errors.append(f"{src.name}: {archive._failure_text(exc)}")
+            continue
         if not dry_run:
             try:
-                size = src.stat().st_size
                 _atomic_copy(src, Path(sync_dir) / src.name)
-            except OSError as exc:
-                errors.append(f"{src.name}: {archive._failure_text(exc)}")
-                continue
-        else:
-            try:
-                size = src.stat().st_size
             except OSError as exc:
                 errors.append(f"{src.name}: {archive._failure_text(exc)}")
                 continue
@@ -89,11 +95,14 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
     sessions_added = 0
     messages_added = 0
     total = 0
-    local_ids = {tail for p in archives_dir.glob("*.zip")
+    local_ids = {tail for p in _scan_zips(archives_dir)
                  if (tail := _id_tail(p.name))}
-    for src in sorted(Path(sync_dir).glob("*.zip")):
+    # 无 id12 尾巴的包以文件名判同，避免每轮重复复制+导入；
+    # .tmp-/.build- 前缀的强杀残留不算"已存在"，可被规范包覆盖清掉
+    local_names = {p.name for p in _scan_zips(archives_dir)}
+    for src in _scan_zips(sync_dir):
         tail = _id_tail(src.name)
-        if tail and tail in local_ids:
+        if (tail and tail in local_ids) or src.name in local_names:
             existing += 1
             continue
         check = archive.verify_archive(src)
@@ -110,7 +119,7 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
             continue
         try:
             imported = archive.import_archive(conn, dest)
-        except (archive.ArchiveError, OSError) as exc:
+        except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
             errors.append(f"{src.name}: 已复制但导入失败 "
                           f"{archive._failure_text(exc)}")
             continue
@@ -120,6 +129,7 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
         messages_added += imported.messages_inserted
         if tail:
             local_ids.add(tail)
+        local_names.add(src.name)
     return SyncResult(pulled=pulled, skipped_existing=existing,
                       skipped_invalid=tuple(invalid),
                       sessions_added=sessions_added,
