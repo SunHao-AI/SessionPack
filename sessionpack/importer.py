@@ -11,7 +11,7 @@ from sessionpack import catalog
 from sessionpack.adapters.base import MemoryAdapter
 from sessionpack.adapters.trae_memory import SESSION_FILE_RE, project_display_name
 from sessionpack.mem import peak_rss_mb
-from sessionpack.model import MessageRecord, ProjectRecord, SourceFile, TopicRecord
+from sessionpack.model import ProjectRecord, SourceFile, TopicRecord
 
 BATCH_ROWS = 2000
 MAX_FAILURES = 50

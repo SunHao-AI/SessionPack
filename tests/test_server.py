@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack import archive, catalog, config, diagnostics
+from sessionpack import archive, catalog, config
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 from sessionpack.server import create_server

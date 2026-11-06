@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack.audit import ReadAudit, ReadBoundaryError
 from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.audit import ReadAudit, ReadBoundaryError
 from sessionpack.importer import import_source
 
 

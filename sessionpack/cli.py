@@ -6,10 +6,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from sessionpack import (__version__, archive, catalog, config, diagnostics,
-                         export, importer, sync)
+from sessionpack import __version__, archive, catalog, config, diagnostics, export, importer, sync
 from sessionpack.adapters import get_adapter
-from sessionpack.audit import ReadBoundaryError, ReadAudit
+from sessionpack.audit import ReadAudit, ReadBoundaryError
 from sessionpack.paths import Layout, default_memory_root, ensure_layout, resolve_data_dir
 
 EXIT_OK = 0

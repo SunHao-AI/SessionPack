@@ -71,6 +71,6 @@ def test_archive_roundtrip_and_export_is_stable(memory_tree: Path, tmp_path: Pat
     assert imported.sessions == built.sessions
     assert imported.messages == built.messages
     assert [p.name for p in before.paths] == [p.name for p in after.paths]
-    for left, right in zip(before.paths, after.paths):
+    for left, right in zip(before.paths, after.paths, strict=True):
         assert left.read_text(encoding="utf-8") == right.read_text(encoding="utf-8")
     assert archive.verify_archive(built.path).ok

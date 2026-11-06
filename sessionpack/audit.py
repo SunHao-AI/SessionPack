@@ -24,7 +24,7 @@ class ReadAudit:
         self.violations: list[str] = []
         self.active = True
 
-    def __enter__(self) -> "ReadAudit":
+    def __enter__(self) -> ReadAudit:
         sys.addaudithook(self._hook)
         return self
 

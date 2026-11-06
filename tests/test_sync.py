@@ -331,7 +331,7 @@ def test_two_device_sync_roundtrip(memory_tree: Path, tmp_path: Path) -> None:
         exp_a = export.export_project(conn_a, project["project_id"], tmp_path / "exp-a")
         exp_b = export.export_project(conn_b, project["project_id"], tmp_path / "exp-b")
         assert [p.name for p in exp_a.paths] == [p.name for p in exp_b.paths]
-        for left, right in zip(exp_a.paths, exp_b.paths):
+        for left, right in zip(exp_a.paths, exp_b.paths, strict=True):
             assert left.read_bytes() == right.read_bytes()
     finally:
         conn_a.close()
