@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from sessionpack import catalog, config
-from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.adapters import get_adapter
 from sessionpack.paths import Layout
 
 
@@ -33,7 +33,7 @@ def _sync_section(root: Path) -> dict:
 
 
 def collect(memory_root: Path, layout: Layout) -> dict:
-    adapter = TraeMemoryAdapter()
+    adapter = get_adapter()
     exists = Path(memory_root).is_dir()
     info = adapter.inspect(memory_root) if exists else None
     database = private_db_path()
