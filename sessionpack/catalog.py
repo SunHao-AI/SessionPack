@@ -314,3 +314,65 @@ def stats(conn: sqlite3.Connection) -> dict[str, int]:
         "messages": conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
         "fts_rows": conn.execute("SELECT COUNT(*) FROM message_fts").fetchone()[0],
     }
+
+
+# ---------------------------------------------------------------- run / file 表
+
+
+def begin_import_run(conn: sqlite3.Connection, run_id: str, adapter_id: str,
+                     adapter_version: int, started_at: str) -> None:
+    conn.execute(
+        "INSERT INTO import_runs(run_id, adapter_id, adapter_version,"
+        " started_at, result) VALUES(?,?,?,?,?)",
+        (run_id, adapter_id, adapter_version, started_at, "running"))
+
+
+def finish_import_run(conn: sqlite3.Connection, run_id: str, *,
+                      finished_at: str, result: str,
+                      scanned_files: int | None = None,
+                      imported_rows: int | None = None,
+                      failed_rows: int | None = None,
+                      warnings_json: str | None = None) -> None:
+    cols: dict[str, object] = {
+        "finished_at": finished_at, "result": result,
+        "scanned_files": scanned_files, "imported_rows": imported_rows,
+        "failed_rows": failed_rows, "warnings_json": warnings_json,
+    }
+    parts = ", ".join(f"{k}=?" for k, v in cols.items() if v is not None)
+    args = [v for v in cols.values() if v is not None]
+    conn.execute(f"UPDATE import_runs SET {parts} WHERE run_id=?",
+                 (*args, run_id))
+
+
+def load_import_files(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    return {row["path"]: row
+            for row in conn.execute("SELECT * FROM import_files")}
+
+
+def register_import_files(conn: sqlite3.Connection,
+                          rows: list[tuple[str, int, float]]) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO import_files(path, size, mtime) VALUES(?,?,?)",
+        rows)
+
+
+def reset_import_file(conn: sqlite3.Connection, *, size: int, mtime: float,
+                      path: str) -> None:
+    conn.execute(
+        "UPDATE import_files SET size=?, mtime=?, offset=0, rows=0,"
+        " done=0, error=NULL WHERE path=?", (size, mtime, path))
+
+
+def clear_import_file_error(conn: sqlite3.Connection, path: str) -> None:
+    conn.execute(
+        "UPDATE import_files SET offset=0, rows=0, done=0, error=NULL"
+        " WHERE path=?", (path,))
+
+
+def save_import_file_state(conn: sqlite3.Connection, *, path: str, offset: int,
+                           rows: int, done: int, last_run_id: str,
+                           error: str | None) -> None:
+    conn.execute(
+        "UPDATE import_files SET offset=?, rows=?, done=?, last_run_id=?,"
+        " error=? WHERE path=?",
+        (offset, rows, done, last_run_id, error, path))
