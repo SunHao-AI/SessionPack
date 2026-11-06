@@ -1,8 +1,9 @@
-"""本地工程化护栏：ruff -> mypy -> pytest 一键检查（fail-fast）。
+"""本地工程化护栏：lint_imports -> ruff -> mypy -> pytest 一键检查（fail-fast）。
 
-设计见 docs/superpowers/specs/2026-11-06-架构工程化-护栏-design.md。
+设计见 docs/superpowers/specs/2026-11-06-架构工程化-护栏-design.md
+与 docs/superpowers/specs/2026-11-06-架构工程化-模块边界-design.md。
 用项目内 .venv 的解释器执行，任意解释器均可运行本脚本：
-    python scripts/check.py [--only ruff|mypy|pytest]
+    python scripts/check.py [--only lint_imports|ruff|mypy|pytest]
 """
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ORDER = ["ruff", "mypy", "pytest"]
+ORDER = ["lint_imports", "ruff", "mypy", "pytest"]
 STEPS = {
+    "lint_imports": [str(ROOT / "scripts" / "lint_imports.py")],
     "ruff": ["-m", "ruff", "check", "."],
     "mypy": ["-m", "mypy"],
     "pytest": ["-m", "pytest", "-q"],

@@ -1,0 +1,63 @@
+"""lint_imports 自测：三类规则各命中 + 合规源码 0 命中 + 包内边/相对导入豁免。"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import lint_imports  # noqa: E402
+
+
+def test_layer_rule_hits_l3_importing_l4():
+    src = "from sessionpack import server\n"
+    out = lint_imports.check_source(src, "sessionpack/importer.py")
+    assert len(out) == 1
+    assert "E_LAYER" in out[0]
+    assert out[0].startswith("sessionpack/importer.py:1: E_LAYER")
+
+
+def test_layer_rule_ok_l3_importing_l2():
+    src = "from sessionpack import catalog\n"
+    assert lint_imports.check_source(src, "sessionpack/importer.py") == []
+
+
+def test_private_rule_hits_cross_module_underscore_call():
+    src = "from sessionpack import archive\nx = archive._failure_text(e)\n"
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    priv = [o for o in out if "E_PRIVATE" in o]
+    assert len(priv) == 1
+    assert priv[0].startswith("sessionpack/sync.py:2: E_PRIVATE")
+
+
+def test_private_rule_ok_self_and_os():
+    src = "import os\nos._exit(9)\nself._x()\n"
+    assert lint_imports.check_source(src, "sessionpack/importer.py") == []
+
+
+def test_sql_rule_hits_write_on_managed_table():
+    src = 'conn.execute("UPDATE import_files SET offset=0 WHERE path=?")\n'
+    out = lint_imports.check_source(src, "sessionpack/importer.py")
+    assert len(out) == 1
+    assert "E_SQL" in out[0]
+
+
+def test_sql_rule_ok_catalog_and_plain_select():
+    src = 'conn.execute("UPDATE import_files SET offset=0 WHERE path=?")\n'
+    assert lint_imports.check_source(src, "sessionpack/catalog.py") == []
+    src2 = 'conn.execute("SELECT * FROM sessions WHERE project_id=?")\n'
+    assert lint_imports.check_source(src2, "sessionpack/archive.py") == []
+
+
+def test_intra_package_and_relative_import_exempt():
+    src = "from .verify import verify_archive\n"
+    assert lint_imports.check_source(src, "sessionpack/archive/install.py") == []
+
+
+def test_check_tree_finds_baseline_violations_on_repo():
+    root = Path(__file__).resolve().parents[1]
+    found = set(lint_imports.check_tree(root))
+    assert found == lint_imports.BASELINE, (
+        "基线与当前代码不符。新增违规必须修代码；消除违规必须同步删基线条目。"
+        f"\n新增: {sorted(found - lint_imports.BASELINE)}"
+        f"\n已消除: {sorted(lint_imports.BASELINE - found)}"
+    )
