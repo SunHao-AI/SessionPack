@@ -184,6 +184,7 @@ def build_archive(
                     "size": path.stat().st_size,
                 })
         archive_id = compute_archive_id(entries)
+        files: list[dict] = sorted(entries, key=lambda item: item["path"])
         manifest = {
             "format": FORMAT_NAME,
             "format_version": FORMAT_VERSION,
@@ -198,7 +199,7 @@ def build_archive(
             },
             "counts": {"sessions": len(sessions), "messages": total_messages},
             "producer": {"name": "sessionpack", "version": __version__},
-            "files": sorted(entries, key=lambda item: item["path"]),
+            "files": files,
         }
         (work / MANIFEST_NAME).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -206,7 +207,7 @@ def build_archive(
         )
         temp_zip = out_dir / f".tmp-{archive_id[:12]}.zip"
         with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as bundle:
-            for entry in manifest["files"]:
+            for entry in files:
                 bundle.write(work / entry["path"], entry["path"])
             bundle.write(work / MANIFEST_NAME, MANIFEST_NAME)
         check = verify_archive(temp_zip)

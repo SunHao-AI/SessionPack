@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Literal
 
 
 class ReadBoundaryError(RuntimeError):
@@ -28,7 +29,7 @@ class ReadAudit:
         sys.addaudithook(self._hook)
         return self
 
-    def __exit__(self, *exc_info) -> bool:
+    def __exit__(self, *exc_info: object) -> Literal[False]:
         self.active = False
         return False
 

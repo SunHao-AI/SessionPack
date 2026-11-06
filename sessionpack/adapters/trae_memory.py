@@ -119,7 +119,9 @@ class TraeMemoryAdapter:
     def read_file(
         self, ref: SourceFile, start_offset: int = 0, start_seq: int = 0
     ) -> Iterator[tuple[int, Record | None, str | None]]:
-        session_id = self._session_id(ref) if ref.kind == "messages" else None
+        session_id = ""
+        if ref.kind == "messages":
+            session_id = self._session_id(ref)
         offset = start_offset
         seq = start_seq
         with ref.path.open("rb") as handle:

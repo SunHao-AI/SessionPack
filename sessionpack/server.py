@@ -7,6 +7,7 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from sessionpack import catalog, diagnostics, export
@@ -22,6 +23,12 @@ STATIC = {
 }
 
 
+class _TokenServer(ThreadingHTTPServer):
+    """附带 token 属性的 ThreadingHTTPServer，供 serve() 拼启动 URL。"""
+
+    token: str
+
+
 def create_server(
     catalog_path: Path,
     *,
@@ -29,9 +36,9 @@ def create_server(
     port: int = 0,
     token: str | None = None,
     memory_root: Path | None = None,
-) -> ThreadingHTTPServer:
+) -> _TokenServer:
     catalog_path = Path(catalog_path)
-    memory_root = Path(memory_root) if memory_root else default_memory_root()
+    memory_root_path = Path(memory_root) if memory_root else default_memory_root()
     actual_token = token or secrets.token_urlsafe(16)
 
     class Handler(BaseHTTPRequestHandler):
@@ -73,7 +80,7 @@ def create_server(
                 name, port = raw, ""
             if name not in ("127.0.0.1", "localhost", "[::1]", "::1"):
                 return False
-            if port and port != str(self.server.server_address[1]):
+            if port and port != str(cast("tuple[str, int]", self.server.server_address)[1]):
                 return False
             return True
 
@@ -168,13 +175,13 @@ def create_server(
                     return
                 if path == "/api/diagnostics":
                     layout = ensure_layout(catalog_path.parent)
-                    self._json(HTTPStatus.OK, diagnostics.collect(memory_root, layout))
+                    self._json(HTTPStatus.OK, diagnostics.collect(memory_root_path, layout))
                     return
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             finally:
                 conn.close()
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = _TokenServer((host, port), Handler)
     httpd.token = actual_token
     return httpd
 

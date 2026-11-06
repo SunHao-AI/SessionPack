@@ -290,6 +290,7 @@ def _cmd_verify(args) -> int:
     else:
         for result in results:
             if result.ok:
+                assert result.manifest is not None  # verify_archive 成功时 manifest 必非空
                 print(f"OK  {result.path}"
                       f"（archive_id {result.manifest['archive_id']}）")
             else:
