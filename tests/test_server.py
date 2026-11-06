@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack import archive, catalog
+from sessionpack import archive, catalog, config
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 from sessionpack.server import create_server
@@ -198,3 +198,39 @@ def test_export_session_content_type_utf8(base_url: str) -> None:
         assert response.status == 200
         assert response.headers["Content-Type"] == "text/markdown; charset=utf-8"
         assert response.read().decode("utf-8")
+
+
+def test_diagnostics_sync_section_unconfigured(base_url: str) -> None:
+    status, body = _get(base_url + "/api/diagnostics?token=test-token")
+    data = json.loads(body)
+    assert status == 200
+    assert data["sync"] == {"configured": False, "dir": None, "exists": False,
+                            "archives": 0, "bytes": 0}
+
+
+def test_diagnostics_sync_section_configured(memory_tree: Path,
+                                             tmp_path: Path) -> None:
+    db = tmp_path / "catalog.sqlite"
+    import_source(TraeMemoryAdapter(), memory_tree, db)
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "demo-2026-11-06-0123456789ab.zip").write_bytes(b"x" * 123)
+    config.set_sync_dir(tmp_path, share)     # server 以 db_path.parent 为 data-root
+    server = create_server(db, port=0, token="test-token", memory_root=memory_tree)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _get(
+            f"http://127.0.0.1:{server.server_address[1]}"
+            "/api/diagnostics?token=test-token")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    data = json.loads(body)
+    assert status == 200
+    assert data["sync"]["configured"] is True
+    assert data["sync"]["dir"] == str(share)
+    assert data["sync"]["exists"] is True
+    assert data["sync"]["archives"] == 1
+    assert data["sync"]["bytes"] == 123

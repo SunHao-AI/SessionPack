@@ -4,7 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from sessionpack import catalog
+from sessionpack import catalog, config
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.paths import Layout
 
@@ -13,6 +13,18 @@ def private_db_path() -> Path:
     base = os.environ.get("APPDATA")
     roaming = Path(base) if base else Path.home() / "AppData" / "Roaming"
     return roaming / "Trae CN" / "ModularData" / "ai-agent" / "database.db"
+
+
+def _sync_section(root: Path) -> dict:
+    target = config.sync_dir(root)
+    if target is None:
+        return {"configured": False, "dir": None, "exists": False,
+                "archives": 0, "bytes": 0}
+    exists = target.is_dir()
+    files = [p for p in target.glob("*.zip") if p.is_file()] if exists else []
+    return {"configured": True, "dir": str(target), "exists": exists,
+            "archives": len(files),
+            "bytes": sum(p.stat().st_size for p in files)}
 
 
 def collect(memory_root: Path, layout: Layout) -> dict:
@@ -46,6 +58,7 @@ def collect(memory_root: Path, layout: Layout) -> dict:
             "size_bytes": 0,
             "archives_bytes": 0,
         },
+        "sync": _sync_section(layout.root),
         "warnings": [] if exists else ["记忆目录不存在"],
     }
     if layout.catalog.is_file():
