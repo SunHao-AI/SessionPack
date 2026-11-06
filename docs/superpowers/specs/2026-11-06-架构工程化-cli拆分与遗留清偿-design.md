@@ -194,3 +194,62 @@ def connect_readonly(path: Path) -> sqlite3.Connection:
 - output.py 被领域层 import 无法被 E_LAYER 拦截（L0 向下不受层级规则约束），
   以代码评审约定"output 仅 cli/* 使用"兜底。
 - 属性链 E_PRIVATE 扩展启发式对实例属性链的误报可能，以 BASELINE 兜底。
+- `owner.endswith(source_module)` 是后缀启发式而非段边界匹配（`lint_imports.py`
+  三处同源），理论上名为 `x.catalog` 的包会被误判为同包而豁免；基线既有形态，
+  本次未扩大其使用范围。
+- 实施实测偏差与契约核验记录（2026-11-06，计划
+  `docs/superpowers/plans/2026-11-06-cli拆分与遗留清偿.md`）：
+  - `catalog.py` 实际 378 行（本设计初稿记为 324）、`cli.py` 实际 391 行（初稿记为
+    347）；拆包按实际行数完成，不影响方案。
+  - `server.py` 对 `SESSION_ID_RE` 的依赖是**赋值式重导出**
+    （`SESSION_ID_RE = catalog.SESSION_ID_RE`），且模块内部另有属性式调用点；已按
+    「删除重导出 + 内部改用 `catalog.SESSION_ID_RE`」清偿，未保留兼容别名。
+  - `sync.py` 的相对导入实际为两行（`from . import archive` 与
+    `from .textutil import failure_text`），本设计初稿只列了一行；两行均已改绝对导入。
+  - `serve` 保持 `cmd_serve` 直返 `int`（不产出 `CommandResult`），因为它是阻塞式
+    HTTP 服务，无渲染语义。
+  - `main()` 的派发从 `args.func(args)` 改为
+    `globals()[f"_cmd_{args.command}"]` 门面查表，以保留既有
+    `monkeypatch.setattr(cli, "_cmd_scan", …)` 测试写法。
+  - 全量测试最终计数：`195 passed`（基线 167；计划预算 189）。差额 +6 全部落在
+    C9 守卫所在的 `tests/test_lint_imports.py`（13 → 23）：计划预算四项各 1 条，
+    实做 10 条——四项守卫各落地（E_PRIVATE import 别名 1、E_SQL 跳过 docstring 1、
+    W_UNMAPPED 拆 2 条、属性链 1）+ E_SQL 豁免收窄 1（随 Task 1 的 `f9149ca` 落地）+
+    扩充① 前缀键 2 + 扩充② 子包门面 1 + 修复轮 1；Task 1（5）、Task 2（1）、
+    Task 3（12）与预算一致。
+  - E_SQL 豁免最终形态：计划原文是整目录前缀豁免
+    `rel.startswith("sessionpack/catalog/")`，经审查收紧为精确文件集合
+    `SQL_WRITE_ALLOWED = {"sessionpack/catalog/conn.py", "sessionpack/catalog/write.py"}`
+    （`conn.py` 因 SCHEMA 建表 DDL 必须豁免）；`read.py` 与 `catalog/__init__.py`
+    恢复受 E_SQL 检查，收尾实测两处均可报违规。
+  - 守卫扩充两项（用户裁定，超出计划四项）：① `LAYER_OF` 改用包前缀键
+    （`catalog.conn: 2`、`cli.output: 0` 等），`_layer_of()` 先查 `包.子模块` 再回退
+    包自身，消除不同包同名子模块的跨包串扰；② 子包 `__init__.py` 归一化为所属包后
+    纳入 E_LAYER 检查（原先完全脱离分层检查）。
+  - E_PRIVATE 同包豁免：`import a.b._c` 别名分支与 `from a.b import _c` 分支判据已
+    对齐（`not owner.endswith(source_module) and owner != "sessionpack"`），同包私有
+    模块可用、跨包锁死。
+  - 计划样例与守卫实现细节存在三处出入（样例 `h._load()` 不触发新规则、
+    `id(node.value)` 对 `ast.Module` 抛 AttributeError、无条件降级会误报顶层门面），
+    均按「先红后绿」实跑校准后落地，未放宽任何规则。
+  - 契约核验通过：`sessionpack.catalog.__all__` 26 项（覆盖拆分前全部 22 个公共
+    顶层符号，另含 `SCHEMA`/`SESSION_ID_RE`/`connect_readonly`/`require_catalog`）；
+    `sessionpack.cli` 的 `main`/`build_parser`/`EXIT_OK`/`EXIT_VERIFY` 可导入；
+    `--version` → `0.3.0` 退出码 0；`scan` 缺失记忆目录 → stderr
+    `记忆目录不存在: …` 退出码 2；`serve` 未建索引 → stderr
+    `索引不存在，请先运行 sessionpack import` 退出码 2。临时目录 `.spike-check`
+    已清理，`git status --short` 干净。
+  - 两处预期与实测不符，均为**核验文案写错，未放宽规则**：
+    - 计划步骤 4 第一条探针 `check_source('from sessionpack import cli\n',
+      'sessionpack/catalog/read.py')` 预期 `[]`，实测报
+      `E_LAYER import L2 -> L4 (catalog -> cli)`——该源码并非「catalog 包内边」，
+      而是真实的 L2→L4 上向依赖，基线守卫同样报错。改以真正的包内边探针核验：
+      `from . import conn` 与 `from sessionpack.catalog import conn` 均返回 `[]`，
+      包内边豁免生效；E_SQL 探针报 1 条、E_PRIVATE 探针报 2 条（同一跨包私有导入被
+      「import 别名」与「from import」两条规则各判一次），规则均在生效。
+    - 计划步骤 3 预期在本机默认环境不成立：默认记忆目录存在，故
+      `doctor --data-dir <空目录>` 退出码 0 并打印 `记忆目录：…（存在）`，须加
+      `--memory-root .\does-not-exist` 才复现预期 `（不存在）` + 退出码 2；
+      同理默认数据目录已建索引，`export --all --out …` 退出码 0
+      （`已导出 9 个会话、47 条消息`），须补 `--data-dir .spike-check` 才复现
+      `索引不存在，请先运行 sessionpack import` + 退出码 2。属环境差异，非契约破坏。
