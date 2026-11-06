@@ -43,7 +43,7 @@ def test_sql_rule_hits_write_on_managed_table():
 
 def test_sql_rule_ok_catalog_and_plain_select():
     src = 'conn.execute("UPDATE import_files SET offset=0 WHERE path=?")\n'
-    assert lint_imports.check_source(src, "sessionpack/catalog.py") == []
+    assert lint_imports.check_source(src, "sessionpack/catalog/write.py") == []
     src2 = 'conn.execute("SELECT * FROM sessions WHERE project_id=?")\n'
     assert lint_imports.check_source(src2, "sessionpack/archive.py") == []
 

@@ -75,9 +75,7 @@ def collect(memory_root: Path, layout: Layout) -> dict:
         )
     if layout.catalog.is_file():
         try:
-            conn = sqlite3.connect(
-                f"file:{layout.catalog.resolve().as_posix()}?mode=ro", uri=True
-            )
+            conn = catalog.connect_readonly(layout.catalog)
         except sqlite3.Error:
             result["warnings"].append("索引库无法打开，请重新运行 import")
             return result

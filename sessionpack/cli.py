@@ -26,20 +26,8 @@ def _memory_root(args) -> Path:
 
 
 def _catalog_ready(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        conn = sqlite3.connect(
-            f"file:{path.resolve().as_posix()}?mode=ro", uri=True
-        )
-    except sqlite3.Error:
-        return False
-    try:
-        return catalog.has_schema(conn)
-    except sqlite3.DatabaseError:
-        return False
-    finally:
-        conn.close()
+    """索引是否存在且已建表。真实现即将下沉到 catalog 门面（Task 3）。"""
+    return catalog.require_catalog(path)
 
 
 def build_parser() -> argparse.ArgumentParser:

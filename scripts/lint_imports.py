@@ -22,6 +22,9 @@ LAYER_OF: dict[str, int] = {
     "config": 0, "textutil": 0,
     "adapters": 1,
     "catalog": 2,
+    "conn": 2,
+    "read": 2,
+    "write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
     "cli": 4, "server": 4,
 }
@@ -167,7 +170,7 @@ def check_source(src: str, rel: str) -> list[str]:
 
 def sql_violations(tree: ast.AST, rel: str) -> list[str]:
     """SQL 独占令：字符串字面量含受管表写语句，仅 catalog.py 允许。"""
-    if rel == "sessionpack/catalog.py":
+    if rel.startswith("sessionpack/catalog/"):
         return []
     out: list[str] = []
     for node in ast.walk(tree):
