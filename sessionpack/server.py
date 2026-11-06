@@ -142,7 +142,7 @@ def create_server(
                     payload = text.encode("utf-8")
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type",
-                                     "application/json; charset=utf-8"
+                                     "application/json"
                                      if fmt == "json" else "text/markdown; charset=utf-8")
                     self.send_header("Content-Length", str(len(payload)))
                     self.send_header("Content-Disposition",
