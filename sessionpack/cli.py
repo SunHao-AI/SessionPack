@@ -6,7 +6,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from sessionpack import __version__, archive, catalog, diagnostics, export, importer
+from sessionpack import (__version__, archive, catalog, config, diagnostics,
+                         export, importer, sync)
 from sessionpack.adapters import get_adapter
 from sessionpack.audit import ReadBoundaryError, ReadAudit
 from sessionpack.paths import Layout, default_memory_root, ensure_layout, resolve_data_dir
@@ -96,6 +97,20 @@ def build_parser() -> argparse.ArgumentParser:
     ver.add_argument("archives", nargs="+")
     ver.add_argument("--json", action="store_true")
     ver.set_defaults(func=_cmd_verify)
+
+    push = sub.add_parser("push", help="推送本地归档包到同步目录（只增不删）")
+    push.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
+    push.add_argument("--dry-run", action="store_true",
+                      help="只列出将推送的文件与字节数，不写入任何东西")
+    push.add_argument("--data-dir", default=None)
+    push.add_argument("--json", action="store_true")
+    push.set_defaults(func=_cmd_push)
+
+    pull = sub.add_parser("pull", help="从同步目录拉取归档包并导入索引（只增不删）")
+    pull.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
+    pull.add_argument("--data-dir", default=None)
+    pull.add_argument("--json", action="store_true")
+    pull.set_defaults(func=_cmd_pull)
     return parser
 
 
@@ -282,6 +297,84 @@ def _cmd_verify(args) -> int:
                 print(f"BAD {result.path}："
                       + ", ".join(issue.code for issue in result.issues))
     return EXIT_OK if all(result.ok for result in results) else EXIT_VERIFY
+
+
+def _resolve_sync_dir(args, layout: Layout) -> Path | None:
+    if args.dir:
+        return Path(args.dir).expanduser()
+    return config.sync_dir(layout.root)
+
+
+def _cmd_push(args) -> int:
+    layout = _layout(args)
+    target = _resolve_sync_dir(args, layout)
+    if target is None:
+        print("未指定同步目录：请加 --dir DIR，或先运行 sessionpack push --dir DIR 落配置",
+              file=sys.stderr)
+        return EXIT_USAGE
+    result = sync.push_archives(layout.archives, target, dry_run=args.dry_run)
+    if args.json:
+        print(json.dumps({
+            "sync_dir": str(target),
+            "pushed": result.pushed,
+            "skipped_existing": result.skipped_existing,
+            "skipped_unverified": list(result.skipped_unverified),
+            "bytes": result.bytes,
+            "errors": list(result.errors),
+        }, ensure_ascii=False, indent=2))
+    else:
+        prefix = "[dry-run] " if args.dry_run else ""
+        verb = "将推送" if args.dry_run else "已推送"
+        print(f"{prefix}{verb} {result.pushed} 个包共 {result.bytes} 字节，"
+              f"跳过已存在 {result.skipped_existing}，"
+              f"跳过未通过校验 {len(result.skipped_unverified)}")
+        for item in result.skipped_unverified:
+            print(f"跳过未通过校验的包: {item}")
+        for item in result.errors:
+            print(f"推送失败: {item}", file=sys.stderr)
+    if result.errors:
+        return EXIT_ERROR
+    if args.dir and not args.dry_run:
+        config.set_sync_dir(layout.root, target)
+    return EXIT_OK
+
+
+def _cmd_pull(args) -> int:
+    layout = _layout(args)
+    target = _resolve_sync_dir(args, layout)
+    if target is None:
+        print("未指定同步目录：请加 --dir DIR，或先运行 sessionpack push --dir DIR 落配置",
+              file=sys.stderr)
+        return EXIT_USAGE
+    if not target.is_dir():
+        print(f"同步目录不存在: {target}", file=sys.stderr)
+        return EXIT_USAGE
+    conn = catalog.connect(layout.catalog)
+    catalog.init_schema(conn)
+    try:
+        result = sync.pull_archives(layout.archives, target, conn)
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps({
+            "sync_dir": str(target),
+            "pulled": result.pulled,
+            "skipped_existing": result.skipped_existing,
+            "skipped_invalid": list(result.skipped_invalid),
+            "sessions_added": result.sessions_added,
+            "messages_added": result.messages_added,
+            "bytes": result.bytes,
+            "errors": list(result.errors),
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(f"已拉取 {result.pulled} 个包（新增会话 {result.sessions_added}、"
+              f"消息 {result.messages_added}），跳过已存在 {result.skipped_existing}，"
+              f"跳过无效包 {len(result.skipped_invalid)}")
+        for item in result.skipped_invalid:
+            print(f"跳过无效包: {item}")
+        for item in result.errors:
+            print(f"拉取失败: {item}", file=sys.stderr)
+    return EXIT_ERROR if result.errors else EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:

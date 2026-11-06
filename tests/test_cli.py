@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from sessionpack import catalog, cli
+from sessionpack import catalog, cli, config
 from sessionpack.cli import main
 
 
@@ -218,3 +218,65 @@ def test_doctor_reports_disk_sizes(memory_tree: Path, tmp_path: Path,
     report = json.loads(capsys.readouterr().out)
     assert report["catalog"]["size_bytes"] > 0
     assert report["catalog"]["archives_bytes"] == 0
+
+
+def _seed_archives(memory_tree: Path, data_dir: Path) -> None:
+    main(["import", "--memory-root", str(memory_tree), "--data-dir", str(data_dir)])
+    code = main(["export", "--data-dir", str(data_dir), "--all",
+                 "--archive", "--out", str(data_dir / "archives")])
+    assert code == 0
+
+
+def test_push_without_dir_returns_two(tmp_path: Path, capsys) -> None:
+    code = main(["push", "--data-dir", str(tmp_path / "data")])
+    assert code == 2
+    assert "--dir" in capsys.readouterr().err
+
+
+def test_pull_without_dir_returns_two(tmp_path: Path, capsys) -> None:
+    code = main(["pull", "--data-dir", str(tmp_path / "data")])
+    assert code == 2
+    assert "--dir" in capsys.readouterr().err
+
+
+def test_push_dir_remembers_config_and_pull_roundtrip(memory_tree: Path,
+                                                      tmp_path: Path,
+                                                      capsys) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    share = tmp_path / "share"
+    _seed_archives(memory_tree, src)
+    code = main(["push", "--dir", str(share), "--data-dir", str(src)])
+    assert code == 0
+    assert config.sync_dir(src) == share
+    capsys.readouterr()
+    # 二次 push 不带 --dir：走已存配置，幂等
+    code = main(["push", "--data-dir", str(src), "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pushed"] == 0
+    assert payload["skipped_existing"] == 2
+    assert payload["sync_dir"] == str(share)
+    # fresh 设备 pull：无索引也能收包并导入
+    code = main(["pull", "--dir", str(share), "--data-dir", str(dst), "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pulled"] == 2
+    assert payload["sessions_added"] == 2
+    assert payload["messages_added"] == 4
+    assert not payload["errors"]
+    assert config.sync_dir(dst) is None      # pull 不写配置
+
+
+def test_push_dry_run_writes_nothing(memory_tree: Path, tmp_path: Path,
+                                     capsys) -> None:
+    src = tmp_path / "src"
+    share = tmp_path / "share"
+    _seed_archives(memory_tree, src)
+    capsys.readouterr()
+    code = main(["push", "--dir", str(share), "--dry-run",
+                 "--data-dir", str(src)])
+    assert code == 0
+    assert not share.exists()
+    assert config.sync_dir(src) is None      # dry-run 不落配置
+    assert "dry-run" in capsys.readouterr().out
