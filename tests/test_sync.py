@@ -82,6 +82,26 @@ def test_push_copy_failure_leaves_no_tmp(memory_tree: Path, tmp_path: Path,
     assert not list(share.glob(".tmp-*"))
 
 
+def test_push_stat_failure_is_sanitized(memory_tree: Path, tmp_path: Path,
+                                        monkeypatch) -> None:
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+
+    real_stat = Path.stat
+
+    def boom(self, *args, **kwargs):
+        if self.suffix == ".zip":
+            raise OSError("boom C:\\Users\\secret")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", boom)
+    result = sync.push_archives(src, share)
+    assert result.pushed == 0
+    assert result.errors
+    assert "C:\\Users" not in " ".join(result.errors)
+    assert "<路径>" in " ".join(result.errors)
+
+
 def _fresh_conn(tmp_path: Path):
     conn = catalog.connect(tmp_path / "dst-catalog.sqlite")
     catalog.init_schema(conn)

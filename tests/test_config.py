@@ -30,3 +30,11 @@ def test_corrupt_config_treated_as_empty_with_warning(tmp_path: Path) -> None:
 def test_config_without_sync_section(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text("[other]\nx = 1\n", encoding="utf-8")
     assert config.sync_dir(tmp_path) is None
+
+
+def test_set_sync_dir_non_bmp_path_roundtrip(tmp_path: Path) -> None:
+    target = tmp_path / "分享\U0001F600目录"
+    config.set_sync_dir(tmp_path, target)
+    data, warnings = config.load_config(tmp_path)
+    assert warnings == []
+    assert data["sync"]["dir"] == str(target)

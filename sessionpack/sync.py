@@ -62,12 +62,19 @@ def push_archives(archives_dir: Path, sync_dir: Path,
             continue
         if not dry_run:
             try:
+                size = src.stat().st_size
                 _atomic_copy(src, Path(sync_dir) / src.name)
             except OSError as exc:
                 errors.append(f"{src.name}: {archive._failure_text(exc)}")
                 continue
+        else:
+            try:
+                size = src.stat().st_size
+            except OSError as exc:
+                errors.append(f"{src.name}: {archive._failure_text(exc)}")
+                continue
         pushed.append(src.name)
-        total += src.stat().st_size
+        total += size
     return SyncResult(pushed=len(pushed), skipped_existing=existing,
                       skipped_unverified=tuple(unverified),
                       bytes=total, errors=tuple(errors))
@@ -94,9 +101,9 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
             codes = ", ".join(issue.code for issue in check.issues)
             invalid.append(f"{src.name}: {codes}")
             continue
-        size = src.stat().st_size
         dest = archives_dir / src.name
         try:
+            size = src.stat().st_size
             _atomic_copy(src, dest)
         except OSError as exc:
             errors.append(f"{src.name}: {archive._failure_text(exc)}")

@@ -34,5 +34,5 @@ def sync_dir(root: Path) -> Path | None:
 def set_sync_dir(root: Path, directory: Path) -> None:
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    text = "[sync]\ndir = " + json.dumps(str(Path(directory))) + "\n"
+    text = "[sync]\ndir = " + json.dumps(str(Path(directory)), ensure_ascii=False) + "\n"
     (root / CONFIG_NAME).write_text(text, encoding="utf-8")
