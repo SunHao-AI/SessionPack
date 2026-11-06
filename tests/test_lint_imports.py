@@ -118,6 +118,18 @@ def test_import_alias_escape_is_private_violation() -> None:
     assert any("E_PRIVATE" in item for item in found)
 
 
+def test_import_alias_intra_package_private_is_exempt() -> None:
+    """同包私有模块可用：import 别名分支的豁免须与 from-import 分支对齐。
+
+    catalog/read.py 里 import sessionpack.catalog._helper 属同包内部协作，
+    不得报 E_PRIVATE；换成跨包文件仍须报。
+    """
+    src = "import sessionpack.catalog._helper as h\n\nh.load()\n"
+    assert lint_imports.check_source(src, "sessionpack/catalog/read.py") == []
+    found = lint_imports.check_source(src, "sessionpack/cli/scratch.py")
+    assert any("E_PRIVATE" in item for item in found)
+
+
 def test_docstring_mentioning_write_is_not_sql_violation() -> None:
     """docstring 里解释「禁止 INSERT」不该被判成裸 SQL 写入。"""
     src = ('"""本模块不得写库：禁止 INSERT INTO messages。"""\n\n'

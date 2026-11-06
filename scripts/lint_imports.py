@@ -142,7 +142,12 @@ def check_source(src: str, rel: str,
                     # 别名式导入同样能触到私有模块：import sessionpack.a._b as x
                     segments = a.name.split(".")[1:]
                     hit = next((s for s in segments if _is_private(s)), None)
-                    if hit is not None:
+                    # 豁免条件与 from-import 分支对齐：私有名所在的包就是
+                    # 当前模块自身（同包内部协作合法），或所在包是顶层包门面。
+                    owner = a.name.rpartition(".")[0]
+                    if (hit is not None
+                            and not owner.endswith(source_module)
+                            and owner != "sessionpack"):
                         out.append(
                             f"{rel}:{node.lineno}: E_PRIVATE 'import' pulls "
                             f"private '{hit}' from '{a.name}'")
