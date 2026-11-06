@@ -341,6 +341,7 @@ def test_import_failed_detail_omits_absolute_path(
         archive.import_archive(fresh, built.path)
     codes = {issue.code: issue.detail for issue in caught.value.issues}
     assert "E_IMPORT_FAILED" in codes
+    assert "<路径>" in codes["E_IMPORT_FAILED"]
     assert str(filled_db).lower() not in codes["E_IMPORT_FAILED"].lower()
 
 
