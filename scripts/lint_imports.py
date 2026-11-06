@@ -156,12 +156,14 @@ def check_source(src: str, rel: str,
                 f"{rel}:0: E_PRIVATE module attribute '{local}' imported "
                 f"from '{owner}' is private")
 
-    # 属性访问: obj._attr(...) / obj._attr
+    # 属性访问: obj._attr(...) / obj._attr / obj.sub._attr(...)
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-            v = node.value
-            if isinstance(v, ast.Name) and v.id in imported_names:
-                owner = imported_names[v.id]
+            root = node.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in imported_names:
+                owner = imported_names[root.id]
                 owner_tail = owner.removeprefix("sessionpack.").split(".")[0]
                 if owner_tail != source_module and owner_tail != "sessionpack":
                     out.append(

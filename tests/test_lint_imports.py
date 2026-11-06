@@ -136,6 +136,14 @@ def test_unmapped_module_is_treated_as_l0_with_warning() -> None:
     assert any("W_UNMAPPED" in item for item in warnings)
 
 
+def test_private_attr_on_nested_attribute_chain_is_caught() -> None:
+    """mod.sub._priv() 的根名也要解析，不能只看直接 Name。"""
+    src = ("from sessionpack import archive as ar\n\n"
+           "ar.build._write_row(1)\n")
+    found = lint_imports.check_source(src, "sessionpack/cli/scratch.py")
+    assert any("E_PRIVATE" in item and "_write_row" in item for item in found)
+
+
 def test_repo_tree_has_no_unmapped_warnings(capsys) -> None:
     """全仓实跑不得出现 W_UNMAPPED：所有子模块都已登记 LAYER_OF，
     顶层门面的 dunder 符号（__version__）不构成分层边。"""
