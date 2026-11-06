@@ -126,6 +126,24 @@ def test_docstring_mentioning_write_is_not_sql_violation() -> None:
     assert found == []
 
 
+def test_unmapped_module_is_treated_as_l0_with_warning() -> None:
+    """未登记模块按 L0 处理：向上依赖要报错，同时给出 W_UNMAPPED 警告。"""
+    warnings: list[str] = []
+    src = "from sessionpack import archive\n"
+    found = lint_imports.check_source(
+        src, "sessionpack/mystery/thing.py", warnings=warnings)
+    assert any("E_LAYER" in item for item in found)
+    assert any("W_UNMAPPED" in item for item in warnings)
+
+
+def test_repo_tree_has_no_unmapped_warnings(capsys) -> None:
+    """全仓实跑不得出现 W_UNMAPPED：所有子模块都已登记 LAYER_OF，
+    顶层门面的 dunder 符号（__version__）不构成分层边。"""
+    root = Path(__file__).resolve().parents[1]
+    lint_imports.check_tree(root)
+    assert "W_UNMAPPED" not in capsys.readouterr().err
+
+
 def test_check_tree_finds_baseline_violations_on_repo():
     root = Path(__file__).resolve().parents[1]
     found = set(lint_imports.check_tree(root))

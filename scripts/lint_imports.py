@@ -27,6 +27,8 @@ LAYER_OF: dict[str, int] = {
     "write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
     "cli": 4, "server": 4,
+    # python -m sessionpack 的入口薄壳，与 cli 同为最高消费层
+    "__main__": 4,
     "output": 0,
     "common": 4,
     "parser": 4,
@@ -69,6 +71,11 @@ def module_of(rel: str) -> tuple[str | None, str | None]:
 
 
 def layer(rel_or_mod: str) -> int | None:
+    """模块层级；None 只表示"该路径不是受检模块"（顶层门面/包外路径）。
+
+    已登记但查不到层号（如新出现的子模块）同样返回 None，由调用方按
+    未登记（L0 + W_UNMAPPED）处理，不再享有免检特权。
+    """
     mod, sub = module_of(rel_or_mod)
     if mod is None:
         return None
@@ -86,14 +93,22 @@ def _abs_from_import(node, package: str) -> str:
     return f"{target}.{node.module}" if node.module else target
 
 
+def _is_dunder(name: str) -> bool:
+    """双下划线环绕的名字（如 __version__）是包门面暴露的公共符号。"""
+    return name.startswith("__") and name.endswith("__") and len(name) > 4
+
+
 def _is_private(name: str) -> bool:
     """`_` 前缀视为私有；双下划线环绕的 dunder（如 __version__）是公共契约。"""
-    return name.startswith("_") and not (
-        name.startswith("__") and name.endswith("__") and len(name) > 4)
+    return name.startswith("_") and not _is_dunder(name)
 
 
-def check_source(src: str, rel: str) -> list[str]:
-    """对单个文件源码返回违规列表（字符串格式见 BASELINE）。"""
+def check_source(src: str, rel: str,
+                 warnings: list[str] | None = None) -> list[str]:
+    """对单个文件源码返回违规列表（字符串格式见 BASELINE）。
+
+    warnings 为可选的警告收集列表，用于收集 W_UNMAPPED（不影响退出码）。
+    """
     tree = ast.parse(src)
     mod, _ = module_of(rel)
     source_module = mod or "__init__"
@@ -101,6 +116,7 @@ def check_source(src: str, rel: str) -> list[str]:
     # （sessionpack/archive/build.py -> sessionpack.archive）
     pkg = posixpath.dirname(rel).replace("/", ".")
     out: list[str] = sql_violations(tree, rel)
+    warn_sink = warnings if warnings is not None else []
 
     imported_names: dict[str, str] = {}  # 本地名 -> 定义它的绝对模块
     for node in ast.walk(tree):
@@ -152,8 +168,13 @@ def check_source(src: str, rel: str) -> list[str]:
                         f"{rel}:{node.lineno}: E_PRIVATE module attribute "
                         f"'{node.attr}' called on '{owner}'")
 
-    # 层级白名单
+    # 层级白名单。顶层包门面（sessionpack/__init__.py）与包外路径不属于任何
+    # 模块，保持不检；其余未登记模块按 L0 处理，不再静默免检。
     my_layer = layer(rel)
+    unmapped_src = my_layer is None and module_of(rel)[0] is not None
+    if unmapped_src:
+        my_layer = 0
+        warn_sink.append(f"{rel}:0: W_UNMAPPED 模块未登记 LAYER_OF，按 L0 处理")
     for node in ast.walk(tree):
         mods: list[str] = []
         if isinstance(node, ast.Import):
@@ -172,13 +193,19 @@ def check_source(src: str, rel: str) -> list[str]:
             if not m.startswith("sessionpack"):
                 continue
             parts = m.split(".")
-            if len(parts) < 2 or parts[1] == "__init__":
+            # 顶层门面的 dunder 属性（sessionpack.__version__）是符号不是模块，
+            # 构成分层边只会制造噪声。
+            if len(parts) < 2 or parts[1] == "__init__" or _is_dunder(parts[1]):
                 continue
             tgt_top = parts[1]
             tgt = parts[2] if (tgt_top == "adapters" and len(parts) > 2) else tgt_top
             tgt_layer = LAYER_OF.get(tgt, LAYER_OF.get(tgt_top))
-            if my_layer is None or tgt_layer is None:
+            if my_layer is None:
                 continue
+            if tgt_layer is None:
+                warn_sink.append(f"{rel}:{node.lineno}: W_UNMAPPED "
+                                 f"依赖目标 '{tgt}' 未登记 LAYER_OF，按 L0 处理")
+                tgt_layer = 0
             if parts[1:2] and source_module == tgt_top:
                 continue  # 包内/同模块边豁免
             if tgt_layer > my_layer:
@@ -221,9 +248,13 @@ def sql_violations(tree: ast.AST, rel: str) -> list[str]:
 
 def check_tree(root: Path) -> list[str]:
     found: list[str] = []
+    warnings: list[str] = []
     for path in sorted((root / "sessionpack").rglob("*.py")):
         rel = path.relative_to(root).as_posix()
-        found.extend(check_source(path.read_text(encoding="utf-8"), rel))
+        found.extend(check_source(path.read_text(encoding="utf-8"), rel,
+                                  warnings=warnings))
+    for line in warnings:
+        print(line, file=sys.stderr)
     return found
 
 
