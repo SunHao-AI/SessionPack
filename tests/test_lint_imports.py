@@ -53,6 +53,24 @@ def test_intra_package_and_relative_import_exempt():
     assert lint_imports.check_source(src, "sessionpack/archive/install.py") == []
 
 
+def test_dunder_import_is_public_not_private():
+    src = "from sessionpack import __version__\nv = __version__\n"
+    assert lint_imports.check_source(src, "sessionpack/archive/build.py") == []
+
+
+def test_intra_package_private_call_exempt_only_inside_that_package():
+    src = "from . import build\nx = build._sha256_file(p)\n"
+    assert lint_imports.check_source(src, "sessionpack/archive/install.py") == []
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    assert any("E_PRIVATE" in o for o in out)
+
+
+def test_layer_edge_from_module_level_import_not_shadowed_by_symbol():
+    src = "from sessionpack.catalog import get_projects\n"
+    out = lint_imports.check_source(src, "sessionpack/adapters/trae_memory.py")
+    assert any("E_LAYER" in o for o in out)
+
+
 def test_check_tree_finds_baseline_violations_on_repo():
     root = Path(__file__).resolve().parents[1]
     found = set(lint_imports.check_tree(root))

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -88,8 +89,9 @@ def check_source(src: str, rel: str) -> list[str]:
     tree = ast.parse(src)
     mod, _ = module_of(rel)
     source_module = mod or "__init__"
-    # 源模块所在包（当前 sessionpack 为扁平结构，子目录仅 adapters/）
-    pkg = "sessionpack" if mod != "adapters" else "sessionpack.adapters"
+    # 源模块所在包：按 rel 的父目录计算，支持任意深度子包
+    # （sessionpack/archive/build.py -> sessionpack.archive）
+    pkg = posixpath.dirname(rel).replace("/", ".")
     out: list[str] = sql_violations(tree, rel)
 
     imported_names: dict[str, str] = {}  # 本地名 -> 定义它的绝对模块
