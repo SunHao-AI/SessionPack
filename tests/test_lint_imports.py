@@ -223,3 +223,24 @@ def test_check_tree_finds_baseline_violations_on_repo():
         f"\n新增: {sorted(found - lint_imports.BASELINE)}"
         f"\n已消除: {sorted(lint_imports.BASELINE - found)}"
     )
+
+
+def test_dom_import_rule_hits_outside_cli():
+    src = "from sessionpack.cli.output import emit\n"
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/export.py:1: E_DOM_IMPORT")
+
+
+def test_dom_import_rule_ok_inside_cli():
+    src = "from sessionpack.cli.output import emit\n"
+    assert lint_imports.check_source(src, "sessionpack/cli/read_cmds.py") == []
+    src2 = "from .output import emit\n"
+    assert lint_imports.check_source(src2, "sessionpack/cli/write_cmds.py") == []
+
+
+def test_dom_import_rule_hits_relative_import_outside_cli():
+    src = "from .cli.output import emit\n"
+    out = lint_imports.check_source(src, "sessionpack/server.py")
+    assert any("E_DOM_IMPORT" in o for o in out)

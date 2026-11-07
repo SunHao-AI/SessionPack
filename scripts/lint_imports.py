@@ -47,6 +47,12 @@ SQL_WRITE_ALLOWED = frozenset({
     "sessionpack/catalog/write.py",
 })
 
+# E_DOM_IMPORT：渲染层 cli/output.py 为 cli 包专属（Spec 4 §2）。
+# 豁免用包前缀而非 E_SQL 式冻结文件集：cli/ 新增子模块天然合法；
+# 其他层产生渲染需求时，正确做法是把需求挪进 CLI 层，而非豁免。
+RENDER_TARGET = "sessionpack.cli.output"
+RENDER_ALLOWED_PREFIX = "sessionpack/cli/"
+
 # 只减不增：修复一个删一行；禁止向其中新增条目来"解决"新违规。
 BASELINE: set[str] = set()
 
@@ -219,6 +225,11 @@ def check_source(src: str, rel: str,
         for m in mods:
             if not m.startswith("sessionpack"):
                 continue
+            if m == RENDER_TARGET or m.startswith(RENDER_TARGET + "."):
+                if not rel.startswith(RENDER_ALLOWED_PREFIX):
+                    out.append(
+                        f"{rel}:{node.lineno}: E_DOM_IMPORT render layer "
+                        f"'{RENDER_TARGET}' imported outside cli/")
             parts = m.split(".")
             # 顶层门面的 dunder 属性（sessionpack.__version__）是符号不是模块，
             # 构成分层边只会制造噪声。
