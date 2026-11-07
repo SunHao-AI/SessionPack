@@ -246,6 +246,109 @@ def test_dom_import_rule_hits_relative_import_outside_cli():
     assert any("E_DOM_IMPORT" in o for o in out)
 
 
+def test_dom_import_rule_hits_facade_from_import():
+    """`from sessionpack.cli import output` 真实可达（cli/__init__.py 已把
+    output 子模块绑进门面命名空间），拼写不同不等于没引用渲染层。"""
+    out = lint_imports.check_source(
+        "from sessionpack.cli import output\n", "sessionpack/server.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/server.py:1: E_DOM_IMPORT")
+    assert "sessionpack.cli.output" in dom[0]
+
+
+def test_dom_import_rule_hits_facade_star_import():
+    """`from sessionpack.cli import *` 同样绕过按点路径拼写的字面匹配。"""
+    out = lint_imports.check_source(
+        "from sessionpack.cli import *\n", "sessionpack/server.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/server.py:1: E_DOM_IMPORT")
+
+
+def test_dom_import_rule_hits_facade_attribute_chain():
+    """import 门面后属性链取 output（sessionpack.cli.output.render(...)）也要报。"""
+    out = lint_imports.check_source(
+        "import sessionpack.cli\n\nsessionpack.cli.output.render(x)\n",
+        "sessionpack/server.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/server.py:3: E_DOM_IMPORT")
+
+
+def test_dom_import_rule_hits_facade_attribute_chain_via_package_facade():
+    """`from sessionpack import cli` 后 `cli.output.render(...)` 同样可达。"""
+    out = lint_imports.check_source(
+        "from sessionpack import cli\n\ncli.output.render(x)\n",
+        "sessionpack/export.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/export.py:3: E_DOM_IMPORT")
+
+
+def test_dom_import_rule_hits_aliased_output_import():
+    """import sessionpack.cli.output as o 由 E_DOM_IMPORT 直接按点路径命中。"""
+    out = lint_imports.check_source(
+        "import sessionpack.cli.output as o\n", "sessionpack/export.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/export.py:1: E_DOM_IMPORT")
+    assert lint_imports.check_source(
+        "import sessionpack.cli.output as o\n", "sessionpack/cli/scratch.py") == []
+
+
+def test_dom_import_facade_spellings_stay_legal_inside_cli():
+    """cli 包内互导门面是正常写法：新堵的三种拼写在 cli/ 下都不得变红。"""
+    assert lint_imports.check_source(
+        "from sessionpack.cli import output\noutput.emit(x)\n",
+        "sessionpack/cli/read_cmds.py") == []
+    assert lint_imports.check_source(
+        "from . import output\noutput.emit(x)\n",
+        "sessionpack/cli/write_cmds.py") == []
+    assert lint_imports.check_source(
+        "import sessionpack.cli\nsessionpack.cli.output.render(x)\n",
+        "sessionpack/cli/parser.py") == []
+
+
+def test_allow_private_in_string_literal_is_not_an_exemption():
+    """marker 只认注释：写在字符串字面量里的 marker 不得放行 E_PRIVATE，
+    否则一行代码即可静默绕过私有符号守卫。"""
+    src = ("from sessionpack import archive\n"
+           "x = archive._p() or '# lint-imports: allow-private'\n")
+    warns: list[str] = []
+    out = lint_imports.check_source(src, "sessionpack/sync.py", warns)
+    assert any("E_PRIVATE" in o for o in out), "字符串字面量造成了假豁免"
+    assert not any("W_ALLOW_PRIVATE" in w for w in warns)
+
+
+def test_allow_private_only_exempts_private_rule_on_that_line():
+    """同一行同时踩 E_LAYER + E_PRIVATE：marker 只放行 E_PRIVATE。"""
+    src = ("import sessionpack.server as srv; srv._priv()  "
+           "# lint-imports: allow-private\n")
+    out = lint_imports.check_source(src, "sessionpack/importer.py")
+    assert any("E_LAYER" in o for o in out)
+    assert not any("E_PRIVATE" in o for o in out)
+
+
+def test_allow_private_does_not_exempt_dom_import_on_same_line():
+    """同一行同时踩 E_DOM_IMPORT + E_PRIVATE：marker 只放行 E_PRIVATE。"""
+    src = ("from sessionpack.cli.output import _emit  "
+           "# lint-imports: allow-private\n")
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    assert any("E_DOM_IMPORT" in o for o in out)
+    assert not any(":1: E_PRIVATE" in o for o in out)
+
+
+def test_allow_private_does_not_exempt_route_d_zero_line_report():
+    """route D（导入名本身私有，报 :0:）不受行级豁免影响：marker 换不到放行。"""
+    src = ("from sessionpack.archive import _priv  "
+           "# lint-imports: allow-private\n")
+    out = lint_imports.check_source(src, "sessionpack/cli/read_cmds.py")
+    assert any(o.startswith("sessionpack/cli/read_cmds.py:0: E_PRIVATE")
+               for o in out)
+    assert not any(":1: E_PRIVATE" in o for o in out)
+
+
 def test_private_rule_ok_module_name_rebound_to_instance():
     """遮蔽豁免：import 进来的名字在文件内被重绑定（赋值/参数等），
     属性链根名无法静态断定是模块引用，保守放行（Spec 4 §3.2）。"""

@@ -27,7 +27,8 @@ def test_adapter_display_name():
 def test_importer_has_no_adapter_internals_import():
     pkg = (Path(__file__).resolve().parents[1]
            / "sessionpack" / "importer")
-    files = sorted(pkg.glob("*.py"))
+    files = sorted(pkg.rglob("*.py"))
+    assert files, f"{pkg} 下没有 .py 文件，本测试会空洞通过"
     src = "\n".join(p.read_text(encoding="utf-8") for p in files)
     assert "from sessionpack.adapters.trae_memory import" not in src
     assert "project_display_name" not in src

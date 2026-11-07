@@ -10,6 +10,8 @@ import ast
 import posixpath
 import re
 import sys
+import tokenize
+from io import StringIO
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,11 @@ SQL_WRITE_ALLOWED = frozenset({
 # 其他层产生渲染需求时，正确做法是把需求挪进 CLI 层，而非豁免。
 RENDER_TARGET = "sessionpack.cli.output"
 RENDER_ALLOWED_PREFIX = "sessionpack/cli/"
+# 门面拼写封堵：cli/__init__.py 把 output 子模块绑进了门面命名空间，
+# `from sessionpack.cli import output` / `import *` 与直接 import 该子模块
+# 在运行时等价，只按点路径字面匹配会被这类拼写静音。
+RENDER_FACADE = RENDER_TARGET.rpartition(".")[0]  # sessionpack.cli
+RENDER_FACADE_ATTR = RENDER_TARGET.rpartition(".")[2]  # output
 
 # E_PRIVATE 行级豁免注释（Spec 4 §3.1）：只放行该行号上的 E_PRIVATE，
 # 不豁免 E_LAYER / E_DOM_IMPORT / E_SQL；被豁免行以 W_ALLOW_PRIVATE 警告
@@ -131,6 +138,41 @@ def _is_private(name: str) -> bool:
     return name.startswith("_") and not _is_dunder(name)
 
 
+def _exempt_lines(src: str, rel: str, warn_sink: list[str]) -> set[int]:
+    """收集写有 ALLOW_PRIVATE_MARK 的行号。
+
+    只认真正的注释 token（tokenize.COMMENT）：裸子串扫描会把写在字符串
+    字面量里的 marker（x = f() or '# lint-imports: allow-private'）当成
+    豁免，等于把私有符号守卫的关闭开关交给了运行时数据。
+    tokenize 失败（语法错误源文件）时回退到裸行扫描：check_source 已在
+    更前面用 ast.parse 拦下语法错误，这里只是不让豁免收集单独炸掉，宁可
+    多豁免也不崩（与本文件其余规则「静态检不出即保守放行」的取态一致）。
+    """
+    lines: set[int] = set()
+    try:
+        for tok in tokenize.generate_tokens(StringIO(src).readline):
+            if tok.type == tokenize.COMMENT and ALLOW_PRIVATE_MARK in tok.string:
+                lines.add(tok.start[0])
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        lines = {no for no, line in enumerate(src.splitlines(), start=1)
+                 if ALLOW_PRIVATE_MARK in line}
+    for no in sorted(lines):
+        warn_sink.append(f"{rel}:{no}: W_ALLOW_PRIVATE 该行由注释豁免 E_PRIVATE")
+    return lines
+
+
+def _dotted(node: ast.AST) -> str | None:
+    """纯 Name/Attribute 链拼成点路径，混入 Call/Subscript 等则返回 None。"""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
 def _rebound_names(tree: ast.AST) -> set[str]:
     """文件内被重新绑定过的名字（赋值/增广赋值/带注解赋值/海象/for/with/
     except-as 目标、函数参数）。属性链根名命中即保守放行（Spec 4 §3.2）：
@@ -184,12 +226,7 @@ def check_source(src: str, rel: str,
     pkg = posixpath.dirname(rel).replace("/", ".")
     out: list[str] = sql_violations(tree, rel)
     warn_sink = warnings if warnings is not None else []
-    exempt_lines: set[int] = set()
-    for no, line in enumerate(src.splitlines(), start=1):
-        if ALLOW_PRIVATE_MARK in line:
-            exempt_lines.add(no)
-            warn_sink.append(f"{rel}:{no}: W_ALLOW_PRIVATE "
-                             f"该行由注释豁免 E_PRIVATE")
+    exempt_lines = _exempt_lines(src, rel, warn_sink)
 
     imported_names: dict[str, str] = {}  # 本地名 -> 定义它的绝对模块
     for node in ast.walk(tree):
@@ -247,6 +284,27 @@ def check_source(src: str, rel: str,
                 f"from '{owner}' is private")
 
     rebound = _rebound_names(tree)
+    facade_ok = rel.startswith(RENDER_ALLOWED_PREFIX)
+    # 门面属性链：把门面（sessionpack.cli）以任何名字绑进本文件后取 `.output`
+    # （`import sessionpack.cli` + `cli.output.render(...)`、
+    # `from sessionpack import cli` + `cli.output.render(...)`、
+    # `import sessionpack` + `sessionpack.cli.output.render(...)`），
+    # 运行时与直接 import sessionpack.cli.output 等价，同样按渲染层引用处理。
+    if not facade_ok:
+        facade_roots = {n for n, o in imported_names.items()
+                        if o in (RENDER_FACADE, RENDER_TARGET)}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Attribute)
+                    and node.attr == RENDER_FACADE_ATTR):
+                continue
+            prefix = _dotted(node.value)
+            if (prefix in facade_roots
+                    or f"{prefix}.{RENDER_FACADE_ATTR}" == RENDER_TARGET):
+                out.append(
+                    f"{rel}:{node.lineno}: E_DOM_IMPORT render layer "
+                    f"'{RENDER_TARGET}' reached via attribute chain "
+                    f"'{_dotted(node)}'")
+
     # 属性访问: obj._attr(...) / obj._attr / obj.sub._attr(...)
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
@@ -275,6 +333,17 @@ def check_source(src: str, rel: str,
             mods = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             amod = _abs_from_import(node, pkg)
+            # 门面拼写：output 已被 cli/__init__.py 绑进门面命名空间，
+            # `from sessionpack.cli import output` / `import *` 运行时真实可达，
+            # 与直接 import sessionpack.cli.output 等价。
+            if amod == RENDER_FACADE and not facade_ok:
+                facade = next((a.name for a in node.names
+                               if a.name in (RENDER_FACADE_ATTR, "*")), None)
+                if facade is not None:
+                    out.append(
+                        f"{rel}:{node.lineno}: E_DOM_IMPORT render layer "
+                        f"'{RENDER_TARGET}' imported outside cli/ via "
+                        f"'from {RENDER_FACADE} import {facade}'")
             # `from pkg import X` / `from . import X` 的边指向子模块 X；
             # `from pkg.sub import name` 的边就是 pkg.sub 本身（不要拼成
             # pkg.sub.name，否则目标模块被符号名遮蔽，层级边全部漏报）。
