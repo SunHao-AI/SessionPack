@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from sessionpack import config
 
 
@@ -60,3 +62,83 @@ def test_set_sync_dir_updates_in_place(tmp_path: Path) -> None:
     data, warnings = config.load_config(tmp_path)
     assert warnings == []
     assert data["sync"]["dir"] == str(second)
+
+
+# ---- Spec 6 CFG-1：写回保真护栏 ----
+
+def _keep(tmp_path: Path, text: str) -> str:
+    """摆一个手写 config.toml 并返回原文（用于断言分毫未动）。"""
+    (tmp_path / "config.toml").write_text(text, encoding="utf-8")
+    return text
+
+
+def test_set_sync_dir_rejects_nested_section(tmp_path: Path) -> None:
+    original = _keep(tmp_path, '[sync]\ndir = "x"\n[sync.auth]\ntoken = "t"\n')
+    with pytest.raises(config.ConfigWriteError) as exc:
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert "sync.auth" in str(exc.value)
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_set_sync_dir_rejects_date_value(tmp_path: Path) -> None:
+    original = _keep(tmp_path, "[meta]\nlast_run = 2026-01-01\n")
+    with pytest.raises(config.ConfigWriteError) as exc:
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert "meta.last_run" in str(exc.value)
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_set_sync_dir_rejects_quoted_section_name(tmp_path: Path) -> None:
+    original = _keep(tmp_path, '["my key"]\nx = 1\n')
+    with pytest.raises(config.ConfigWriteError) as exc:
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert "my key" in str(exc.value)
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_set_sync_dir_rejects_quoted_key_in_section(tmp_path: Path) -> None:
+    original = _keep(tmp_path, '[other]\n"my key" = 1\n')
+    with pytest.raises(config.ConfigWriteError) as exc:
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert "other.my key" in str(exc.value)
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_set_sync_dir_rejects_corrupt_file_keeps_bytes(tmp_path: Path) -> None:
+    original = _keep(tmp_path, '[other]\nkeep = "please"\n[sync]\ndir = "D')
+    before = (tmp_path / "config.toml").read_bytes()
+    with pytest.raises(config.ConfigWriteError):
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert (tmp_path / "config.toml").read_bytes() == before
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_set_sync_dir_rejection_leaves_no_tmp(tmp_path: Path) -> None:
+    _keep(tmp_path, '[[repos]]\nname = "x"\n')
+    with pytest.raises(config.ConfigWriteError):
+        config.set_sync_dir(tmp_path, tmp_path / "share")
+    assert not (tmp_path / "config.toml.tmp").exists()
+
+
+def test_set_sync_dir_allows_scalars_and_empty_section(tmp_path: Path) -> None:
+    """放行面：顶层标量、空段、扁平段混合的既有文件必须继续可写。"""
+    _keep(tmp_path, 'verbose = true\n[empty]\n[other]\nname = "k"\nn = 2\n')
+    target = tmp_path / "share"
+    config.set_sync_dir(tmp_path, target)
+    data, warnings = config.load_config(tmp_path)
+    assert warnings == []
+    assert data["sync"]["dir"] == str(target)
+    assert data["verbose"] is True
+    assert data["empty"] == {}
+    assert data["other"] == {"name": "k", "n": 2}
+
+
+def test_set_sync_dir_repairs_scalar_sync(tmp_path: Path) -> None:
+    """sync 原本是标量：按"修复"处理，正常写出不报错且往返保真。"""
+    _keep(tmp_path, 'sync = "D"\n[other]\nx = 1\n')
+    target = tmp_path / "share"
+    config.set_sync_dir(tmp_path, target)
+    assert config.sync_dir(tmp_path) == target
+    data, warnings = config.load_config(tmp_path)
+    assert warnings == []
+    assert data["other"] == {"x": 1}

@@ -128,6 +128,35 @@ def test_run_push_dry_run_and_real(tmp_path: Path) -> None:
     assert real.out_lines[0].startswith("已推送 0 个包共 0 字节")
 
 
+def test_run_push_config_rejected_still_reports_push(tmp_path: Path) -> None:
+    """Spec 6 CFG-1：落配置拒写时，推送成功事实仍报告，且退出码为错误。"""
+    data_dir = _data_dir(tmp_path)
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    original = "[meta]\nlast_run = 2026-01-01\n"
+    (data_dir / "config.toml").write_text(original, encoding="utf-8")
+
+    res = run_push(_ns(data_dir=str(data_dir), dir=str(sync_dir), dry_run=False))
+    assert res.exit_code == 1
+    assert res.out_lines[0].startswith("已推送 0 个包共 0 字节")
+    assert any("落配置失败" in line and "[sync]" in line
+               for line in res.err_lines)
+    assert (data_dir / "config.toml").read_text(encoding="utf-8") == original
+
+
+def test_run_push_dry_run_never_writes_config(tmp_path: Path) -> None:
+    """Spec 6 CFG-1：--dry-run 不触发写路径（锁定现状）。"""
+    data_dir = _data_dir(tmp_path)
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    original = "[meta]\nlast_run = 2026-01-01\n"
+    (data_dir / "config.toml").write_text(original, encoding="utf-8")
+
+    res = run_push(_ns(data_dir=str(data_dir), dir=str(sync_dir), dry_run=True))
+    assert res.exit_code == 0
+    assert (data_dir / "config.toml").read_text(encoding="utf-8") == original
+
+
 def test_run_pull_requires_existing_dir(tmp_path: Path) -> None:
     data_dir = _data_dir(tmp_path)
     missing = tmp_path / "sync"

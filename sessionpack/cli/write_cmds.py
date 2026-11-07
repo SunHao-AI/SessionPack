@@ -163,7 +163,12 @@ def run_push(args) -> CommandResult:
         return CommandResult(EXIT_ERROR, out_lines=lines, err_lines=errors, data=payload)
     # 落配置对 JSON 与文本两种模式同样生效，与原文一致
     if args.dir and not args.dry_run:
-        config.set_sync_dir(lay.root, target)
+        try:
+            config.set_sync_dir(lay.root, target)
+        except config.ConfigWriteError as exc:
+            # 推送已成功这一事实仍要报告，只有"落配置"这一步失败
+            return CommandResult(EXIT_ERROR, out_lines=lines, data=payload,
+                                 err_lines=[f"落配置失败: {exc}"])
     return CommandResult(EXIT_OK, out_lines=lines, data=payload)
 
 
