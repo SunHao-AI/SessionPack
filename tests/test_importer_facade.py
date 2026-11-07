@@ -25,8 +25,21 @@ def test_adapter_display_name():
 
 
 def test_importer_has_no_adapter_internals_import():
-    src = (Path(__file__).resolve().parents[1]
-           / "sessionpack" / "importer.py").read_text(encoding="utf-8")
+    pkg = (Path(__file__).resolve().parents[1]
+           / "sessionpack" / "importer")
+    files = sorted(pkg.glob("*.py"))
+    src = "\n".join(p.read_text(encoding="utf-8") for p in files)
     assert "from sessionpack.adapters.trae_memory import" not in src
     assert "project_display_name" not in src
     assert "SESSION_FILE_RE" not in src
+
+
+def test_importer_is_package_with_facade_and_size():
+    """拆包验收：门面导出全部原公共符号；包内每文件 < 220 行（Spec 4 DoD）。"""
+    import sessionpack.importer as importer
+    for name in ("import_source", "ImportStats", "BATCH_ROWS", "MAX_FAILURES"):
+        assert hasattr(importer, name), name
+    pkg = Path(importer.__file__).parent
+    assert pkg.name == "importer" and (pkg / "__init__.py").is_file()
+    for py in sorted(pkg.glob("*.py")):
+        assert len(py.read_text(encoding="utf-8").splitlines()) < 220, py.name
