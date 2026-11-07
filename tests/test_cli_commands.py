@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from sessionpack import archive
+from sessionpack import archive, catalog
 from sessionpack.cli import build_parser, main
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.cli.read_cmds import run_doctor, run_scan, run_verify
@@ -205,6 +205,44 @@ def test_run_pull_requires_existing_dir(tmp_path: Path) -> None:
     assert ok.exit_code == 0
     assert ok.out_lines == ["已拉取 0 个包（新增会话 0、消息 0），"
                             "跳过已存在 0，跳过无效包 0"]
+
+
+def test_run_import_rejects_future_version_db(tmp_path: Path) -> None:
+    """Spec 7 D1：库比工具新 → EXIT_ERROR + 带版本号文案，不崩栈。"""
+    data_dir = _data_dir(tmp_path)
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    catalog.init_schema(conn)
+    conn.execute("PRAGMA user_version = 99")
+    conn.commit()
+    conn.close()
+    zip_path = tmp_path / "whatever.zip"
+    zip_path.write_bytes(b"")
+    res = run_import(_ns(memory_root=str(tmp_path / "nope"),
+                         data_dir=str(data_dir), archive=str(zip_path),
+                         project=None, since=None, until=None, reparse=False,
+                         retry_failed=False, audit=False))
+    assert res.exit_code == 1
+    assert "99" in res.err_lines[0]
+
+
+def test_run_pull_rejects_legacy_db(tmp_path: Path) -> None:
+    """Spec 7 D1：pull 遇缺列史前库 → EXIT_ERROR + 重建导向文案。"""
+    data_dir = _data_dir(tmp_path)
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    conn.executescript(
+        "CREATE TABLE sessions ("
+        "session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,"
+        "source_kind TEXT NOT NULL, title TEXT, summary TEXT,"
+        "created_at TEXT, updated_at TEXT, status TEXT NOT NULL DEFAULT 'active')"
+    )
+    conn.commit()
+    conn.close()
+    res = run_pull(_ns(data_dir=str(data_dir), dir=str(sync_dir)))
+    assert res.exit_code == 1
+    assert "content_hash" in res.err_lines[0]
+    assert "rebuild --from-archives" in res.err_lines[0]
 
 
 def test_parser_still_builds_every_subcommand() -> None:

@@ -11,6 +11,7 @@ from pathlib import Path
 from sessionpack import archive, catalog, config, export, importer, sync
 from sessionpack.adapters import get_adapter
 from sessionpack.audit import ReadAudit, ReadBoundaryError
+from sessionpack.catalog.conn import CatalogSchemaError, CatalogVersionError
 from sessionpack.cli.common import (
     EXIT_ERROR,
     EXIT_OK,
@@ -28,12 +29,14 @@ def run_import(args) -> CommandResult:
     lay = layout(args)
     if args.archive:
         conn = catalog.connect(lay.catalog)
-        catalog.init_schema(conn)
         try:
+            catalog.init_schema(conn)
             result = archive.import_archive(conn, Path(args.archive))
         except archive.ArchiveError as exc:
             return CommandResult(EXIT_VERIFY, err_lines=[
                 "归档校验失败: " + ", ".join(issue.code for issue in exc.issues)])
+        except (CatalogVersionError, CatalogSchemaError) as exc:
+            return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
         except sqlite3.Error as exc:
             return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
         finally:
@@ -64,6 +67,8 @@ def run_import(args) -> CommandResult:
                     f"读取边界：审计通过（打开 {len(audit.opened)} 个文件）")
         else:
             stats = importer.import_source(adapter, root, lay.catalog, **kwargs)
+    except (CatalogVersionError, CatalogSchemaError) as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
     except sqlite3.Error as exc:
         return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
 
@@ -188,9 +193,11 @@ def run_pull(args) -> CommandResult:
     if not target.is_dir():
         return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
     conn = catalog.connect(lay.catalog)
-    catalog.init_schema(conn)
     try:
+        catalog.init_schema(conn)
         result = sync.pull_archives(lay.archives, target, conn)
+    except (CatalogVersionError, CatalogSchemaError) as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
     finally:
         conn.close()
     if args.json:

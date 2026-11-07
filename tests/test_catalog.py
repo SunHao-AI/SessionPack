@@ -4,6 +4,11 @@ import pytest
 
 from sessionpack import catalog, export
 from sessionpack.adapters import TraeMemoryAdapter
+from sessionpack.catalog.conn import (
+    CatalogSchemaError,
+    CatalogVersionError,
+    schema_version,
+)
 from sessionpack.importer import import_source
 from sessionpack.model import MessageRecord, TopicRecord
 
@@ -145,3 +150,62 @@ def test_list_sessions_source_and_date_filters(filled_db_conn) -> None:
     assert catalog.list_sessions(
         conn, date_from="2026-01-02", date_to="2026-01-02"
     ) == later
+
+
+# ---- Spec 7 D1：VER-1 版本门禁 ----
+
+
+def test_schema_version_zero_before_init(tmp_path: Path) -> None:
+    """未打戳的新库 schema_version 返回 0（史前库同值，走形状校验分支）。"""
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    assert schema_version(conn) == 0
+
+
+def test_init_schema_stamps_version_one(tmp_path: Path) -> None:
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    assert schema_version(conn) == 1
+
+
+def test_reinit_on_versioned_db_is_noop(tmp_path: Path) -> None:
+    """v1 库重复 init_schema 零副作用：不抛、不丢数据、版本不变。"""
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, _msg("归档包的校验流程已完成"))
+    catalog.init_schema(conn)
+    assert schema_version(conn) == 1
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_future_version_rejected_with_number(tmp_path: Path) -> None:
+    """库比工具新：init_schema 拒绝并带上两边版本号，不做任何破坏。"""
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, _msg("未来的数据"))
+    conn.execute("PRAGMA user_version = 99")
+    conn.commit()
+    with pytest.raises(CatalogVersionError) as excinfo:
+        catalog.init_schema(conn)
+    assert "99" in str(excinfo.value)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_legacy_db_missing_column_rejected(tmp_path: Path) -> None:
+    """复刻探针 B：史前库 sessions 缺 content_hash，未打戳即形状校验失败。"""
+    db = tmp_path / "catalog.sqlite"
+    conn = catalog.connect(db)
+    conn.executescript(
+        "CREATE TABLE sessions ("
+        "session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,"
+        "source_kind TEXT NOT NULL, title TEXT, summary TEXT,"
+        "created_at TEXT, updated_at TEXT, status TEXT NOT NULL DEFAULT 'active')"
+    )
+    conn.commit()
+    conn.close()
+    conn = catalog.connect(db)
+    with pytest.raises(CatalogSchemaError) as excinfo:
+        catalog.init_schema(conn)
+    message = str(excinfo.value)
+    assert "content_hash" in message
+    assert "rebuild --from-archives" in message
+    assert schema_version(conn) == 0  # 校验未通过前不打戳

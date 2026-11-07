@@ -2,6 +2,10 @@
 
 可写连接是 connect()，只读连接是 connect_readonly()：
 后者把散落在 cli/diagnostics 的 mode=ro 样板收口到一处。
+
+版本门禁（Spec 7 VER-1）：user_version 标记索引形状版本，
+init_schema 对"表齐全但缺列"的史前库与"库比工具新"两种情况
+fail-closed，导向 sessionpack rebuild --from-archives 重建。
 """
 
 from __future__ import annotations
@@ -11,6 +15,19 @@ import sqlite3
 from pathlib import Path
 
 SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
+
+SCHEMA_VERSION = 1
+
+_REBUILD_HINT = "运行 sessionpack rebuild --from-archives 重建索引"
+
+
+class CatalogVersionError(RuntimeError):
+    """库的 user_version 与当前工具不匹配（过新，或过旧且无迁移路径）。"""
+
+
+class CatalogSchemaError(RuntimeError):
+    """库的表形状不符合当前 schema（如史前库缺列），只能重建。"""
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -90,12 +107,56 @@ def connect_readonly(path: Path) -> sqlite3.Connection:
     return conn
 
 
+# v1 核心表的必需列（逐字取自 SCHEMA 现形状），缺列即形状不符
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "projects": ("project_id", "display_name", "local_path_hint",
+                 "source_kind", "updated_at"),
+    "sessions": ("session_id", "project_id", "source_kind", "title",
+                 "summary", "created_at", "updated_at", "content_hash",
+                 "status"),
+    "messages": ("session_id", "message_id", "seq", "ts", "intent",
+                 "outcome", "actions", "learned", "meta_json", "body"),
+}
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    """读 user_version；未打戳的史前库与全新库返回 0。"""
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _check_required_columns(conn: sqlite3.Connection) -> None:
+    for table, required in _REQUIRED_COLUMNS.items():
+        present = {row[1] for row in conn.execute(
+            "PRAGMA table_info(" + table + ")")}
+        if not present:
+            continue  # 表不存在（IF NOT EXISTS 刚建出全新表，或库未用到该表）
+        missing = [col for col in required if col not in present]
+        if missing:
+            raise CatalogSchemaError(
+                f"索引库形状不符合当前版本：{table} 缺列 "
+                + "、".join(missing)
+                + f"；{_REBUILD_HINT}")
+
+
 def init_schema(conn: sqlite3.Connection) -> str:
     conn.executescript(SCHEMA)
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5("
         "session_id UNINDEXED, message_id UNINDEXED, text, tokenize='trigram')"
     )
+    version = schema_version(conn)
+    if version > SCHEMA_VERSION:
+        raise CatalogVersionError(
+            f"索引库版本 {version} 比当前工具支持的 {SCHEMA_VERSION} 新，"
+            "请升级 sessionpack 后重试")
+    if 0 < version < SCHEMA_VERSION:
+        raise CatalogVersionError(
+            f"索引库版本 {version} 过旧（当前 {SCHEMA_VERSION}），无迁移路径，"
+            f"{_REBUILD_HINT}")
+    if version == 0:
+        # 史前库/新库：形状校验通过才打戳；缺列即刻抛 CatalogSchemaError
+        _check_required_columns(conn)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return tokenizer_of(conn)
 
