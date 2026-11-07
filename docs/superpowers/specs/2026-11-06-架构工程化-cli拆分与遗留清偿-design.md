@@ -194,9 +194,10 @@ def connect_readonly(path: Path) -> sqlite3.Connection:
 - output.py 被领域层 import 无法被 E_LAYER 拦截（L0 向下不受层级规则约束），
   以代码评审约定"output 仅 cli/* 使用"兜底。
 - 属性链 E_PRIVATE 扩展启发式对实例属性链的误报可能，以 BASELINE 兜底。
-- `owner.endswith(source_module)` 是后缀启发式而非段边界匹配（`lint_imports.py`
-  三处同源），理论上名为 `x.catalog` 的包会被误判为同包而豁免；基线既有形态，
-  本次未扩大其使用范围。
+- `owner.endswith(source_module)` 是后缀启发式而非段边界匹配，理论上名为
+  `x.catalog` 的包会被误判为同包而豁免：基线两处使用，本分支为新增的 import
+  别名分支对齐补用第三处（计三处同源），现已统一收紧为段边界比较
+  （`owner == source_module or owner.endswith("." + source_module)`）。
 - 实施实测偏差与契约核验记录（2026-11-06，计划
   `docs/superpowers/plans/2026-11-06-cli拆分与遗留清偿.md`）：
   - `catalog.py` 实际 378 行（本设计初稿记为 324）、`cli.py` 实际 391 行（初稿记为

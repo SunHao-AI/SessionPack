@@ -130,6 +130,23 @@ def test_import_alias_intra_package_private_is_exempt() -> None:
     assert any("E_PRIVATE" in item for item in found)
 
 
+def test_name_collision_package_is_not_exempted_as_same_package() -> None:
+    """撞名包不得享同包豁免：豁免必须按段边界比较，不能用 endswith 后缀匹配。
+
+    catalog/read.py 里 `from sessionpack.data_catalog._x import _priv` 的 owner
+    是 sessionpack.data_catalog，只是**名字以 catalog 结尾**，并非同包，
+    必须报 E_PRIVATE；真正的同包 `sessionpack.catalog._helper` 仍须豁免。
+    """
+    found = lint_imports.check_source(
+        "from sessionpack.data_catalog._x import _priv\n",
+        "sessionpack/catalog/read.py")
+    assert any("E_PRIVATE" in item and "'from import'" in item
+               for item in found), "撞名包 data_catalog 被误判为同包而漏报"
+    assert lint_imports.check_source(
+        "from sessionpack.catalog._helper import load\n",
+        "sessionpack/catalog/read.py") == []
+
+
 def test_docstring_mentioning_write_is_not_sql_violation() -> None:
     """docstring 里解释「禁止 INSERT」不该被判成裸 SQL 写入。"""
     src = ('"""本模块不得写库：禁止 INSERT INTO messages。"""\n\n'

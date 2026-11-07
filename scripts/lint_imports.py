@@ -146,7 +146,8 @@ def check_source(src: str, rel: str,
                     # 当前模块自身（同包内部协作合法），或所在包是顶层包门面。
                     owner = a.name.rpartition(".")[0]
                     if (hit is not None
-                            and not owner.endswith(source_module)
+                            and not (owner == source_module
+                                     or owner.endswith("." + source_module))
                             and owner != "sessionpack"):
                         out.append(
                             f"{rel}:{node.lineno}: E_PRIVATE 'import' pulls "
@@ -163,7 +164,8 @@ def check_source(src: str, rel: str,
                 if _is_private(a.name):
                     owner = amod.rpartition(".")[0]
                     if (amod.startswith("sessionpack")
-                            and not owner.endswith(source_module)
+                            and not (owner == source_module
+                                     or owner.endswith("." + source_module))
                             and owner != "sessionpack"):
                         out.append(
                             f"{rel}:{node.lineno}: E_PRIVATE 'from import' "
@@ -172,7 +174,9 @@ def check_source(src: str, rel: str,
                     owner_mod = f"{amod}.{a.name}" if is_pkg_edge else amod
                     imported_names[local] = owner_mod
     for local, owner in list(imported_names.items()):
-        if _is_private(local) and not owner.endswith(source_module):
+        if (_is_private(local)
+                and not (owner == source_module
+                         or owner.endswith("." + source_module))):
             out.append(
                 f"{rel}:0: E_PRIVATE module attribute '{local}' imported "
                 f"from '{owner}' is private")
