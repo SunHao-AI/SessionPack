@@ -138,6 +138,19 @@ def _is_private(name: str) -> bool:
     return name.startswith("_") and not _is_dunder(name)
 
 
+def _is_same_module(owner: str, source_module: str) -> bool:
+    """owner 是否就是当前模块自身（同模块内部协作，Spec 5 §5）。
+
+    此处不使用 `owner.endswith("." + source_module)`：段边界对**唯一段**的
+    模块名同样会误配深层同名模块——`sessionpack.foo.cli` 对 source_module
+    为 'cli' 的模块命中 `endswith(".cli")`，而它并非当前模块，其私有符号
+    属跨包访问（N-2）。owner 永远是 `sessionpack.` 开头的完整模块路径，
+    故按 `sessionpack.<模块键>` 精确比较；保留裸名相等比较以覆盖
+    模块键直接给出的调用方。
+    """
+    return owner == source_module or owner == f"sessionpack.{source_module}"
+
+
 def _exempt_lines(src: str, rel: str, warn_sink: list[str]) -> set[int]:
     """收集写有 ALLOW_PRIVATE_MARK 的行号。
 
@@ -252,8 +265,7 @@ def check_source(src: str, rel: str,
                     # 当前模块自身（同包内部协作合法），或所在包是顶层包门面。
                     owner = a.name.rpartition(".")[0]
                     if (hit is not None
-                            and not (owner == source_module
-                                     or owner.endswith("." + source_module))
+                            and not _is_same_module(owner, source_module)
                             and owner != "sessionpack"):
                         out.append(
                             f"{rel}:{node.lineno}: E_PRIVATE 'import' pulls "
@@ -274,8 +286,7 @@ def check_source(src: str, rel: str,
                 if _is_private(a.name):
                     owner = amod.rpartition(".")[0]
                     if (amod.startswith("sessionpack")
-                            and not (owner == source_module
-                                     or owner.endswith("." + source_module))
+                            and not _is_same_module(owner, source_module)
                             and owner != "sessionpack"):
                         out.append(
                             f"{rel}:{node.lineno}: E_PRIVATE 'from import' "
@@ -291,10 +302,9 @@ def check_source(src: str, rel: str,
         # 模块 pkg 恒为 "sessionpack"，不加此条件会顺带关掉扁平模块跨模块私有
         # 导入的机械检测（Task 3 审查 I-1）。
         if (_is_private(local)
-                and not (owner == source_module
-                         or owner.endswith("." + source_module)
-                         or (pkg != "sessionpack"
-                             and owner.rpartition(".")[0] == pkg))):
+                and not _is_same_module(owner, source_module)
+                and not (pkg != "sessionpack"
+                         and owner.rpartition(".")[0] == pkg)):
             out.append(
                 f"{rel}:0: E_PRIVATE module attribute '{local}' imported "
                 f"from '{owner}' is private")

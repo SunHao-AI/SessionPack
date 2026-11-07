@@ -147,6 +147,29 @@ def test_name_collision_package_is_not_exempted_as_same_package() -> None:
         "sessionpack/catalog/read.py") == []
 
 
+def test_route_d_deep_same_name_module_not_exempted() -> None:
+    """Spec 5 §5（N-2）：route D 的同模块豁免按精确模块路径，非 endswith 后缀。
+
+    cli 包内 `from sessionpack.foo.cli import _priv` 的 owner 是
+    sessionpack.foo.cli，只是**末段名字同为 cli**，并非当前模块本身。旧的
+    `owner.endswith("." + source_module)` 会把它当作同模块而豁免 route D，
+    仅剩上游 from-import 分支兜底；收紧后 route D 独立报出该跨包私有导入
+    （纵深防御：不依赖上游路线恰好也查同一名字）。真同包 sessionpack.cli.common
+    的私有导入仍须豁免。
+    """
+    found = lint_imports.check_source(
+        "from sessionpack.foo.cli import _priv\n_priv()\n",
+        "sessionpack/cli/write_cmds.py")
+    assert any("E_PRIVATE" in item
+               and "module attribute '_priv' imported from "
+                    "'sessionpack.foo.cli'" in item
+               for item in found), "深层同名模块被 endswith 误判为同模块而漏报"
+    # 真同包子模块私有导入仍豁免（:0: route D 不报）
+    assert lint_imports.check_source(
+        "from sessionpack.cli.common import _helper\n_helper()\n",
+        "sessionpack/cli/write_cmds.py") == []
+
+
 def test_docstring_mentioning_write_is_not_sql_violation() -> None:
     """docstring 里解释「禁止 INSERT」不该被判成裸 SQL 写入。"""
     src = ('"""本模块不得写库：禁止 INSERT INTO messages。"""\n\n'
