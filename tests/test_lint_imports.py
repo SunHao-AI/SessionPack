@@ -310,6 +310,50 @@ def test_dom_import_facade_spellings_stay_legal_inside_cli():
         "sessionpack/cli/parser.py") == []
 
 
+def test_facade_chain_respects_rebound_param() -> None:
+    """Spec 5 §4（Minor-2）：门面根名被形参遮蔽时保守放行，对齐 route C。
+
+    handler 内的 cli 是运行时对象，`cli.output.render()` 与渲染层无关。
+    """
+    src = ("from sessionpack import cli\n"
+           "def handler(cli):\n"
+           "    cli.output.render()\n")
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    assert not any("E_DOM_IMPORT" in o for o in out)
+
+
+def test_facade_chain_head_bound_not_a_root() -> None:
+    """Spec 5 §4（Minor-1）：`import sessionpack.cli` 绑的是首段 sessionpack，
+    不得登记为门面根——sessionpack.output 不是渲染层路径
+    （真路径 sessionpack.cli.output 由全路径匹配覆盖，另行验证）。"""
+    src = ("import sessionpack.cli\n"
+           "sessionpack = load_cfg()\n"
+           "sessionpack.output()\n")
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    assert not any("E_DOM_IMPORT" in o for o in out)
+
+
+def test_facade_chain_aliased_head_is_still_a_root() -> None:
+    """头绑定剔除不误伤别名拼写：`import sessionpack.cli as c` 的 c 绑的是
+    cli 模块本身，`c.output.render()` 是真阳性仍须报。"""
+    out = lint_imports.check_source(
+        "import sessionpack.cli as c\n\nc.output.render(x)\n",
+        "sessionpack/export.py")
+    dom = [o for o in out if "E_DOM_IMPORT" in o]
+    assert len(dom) == 1
+    assert dom[0].startswith("sessionpack/export.py:3: E_DOM_IMPORT")
+
+
+def test_facade_chain_full_path_unaffected_by_head_bound() -> None:
+    """头绑定剔除后真路径 sessionpack.cli.output.x 仍被全路径匹配兜住，
+    即便根名 sessionpack 随后被重绑定（该分支不经 facade_roots）。"""
+    src = ("import sessionpack.cli\n"
+           "sessionpack = load_cfg()\n"
+           "sessionpack.cli.output.render(x)\n")
+    out = lint_imports.check_source(src, "sessionpack/export.py")
+    assert any("E_DOM_IMPORT" in o for o in out)
+
+
 def test_allow_private_in_string_literal_is_not_an_exemption():
     """marker 只认注释：写在字符串字面量里的 marker 不得放行 E_PRIVATE，
     否则一行代码即可静默绕过私有符号守卫。"""
@@ -412,3 +456,36 @@ def test_flat_module_private_import_still_checked_after_I1() -> None:
     src = "from sessionpack.archive import _write_row\n"
     out = lint_imports.check_source(src, "sessionpack/sync.py")
     assert any("E_PRIVATE" in item for item in out)
+
+
+def test_rebound_collects_comprehension_target() -> None:
+    """Spec 5 §2：推导式目标是局部变量，须计入遮蔽集合。
+
+    `[catalog for catalog in rows]` 之后 `catalog._priv()` 访问的是运行时
+    元素而非模块，此前目标未收集会误报 E_PRIVATE。
+    """
+    src = ("from sessionpack import catalog\n"
+           "rows = [c for c in raw]\n"
+           "vals = [catalog._priv() for catalog in rows]\n")
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    assert not any("E_PRIVATE" in o for o in out)
+
+
+def test_rebound_collects_lambda_params() -> None:
+    """Spec 5 §2：lambda 形参是局部变量，体内同名私有访问不得误报。"""
+    src = ("from sessionpack import catalog\n"
+           "f = lambda catalog: catalog._priv()\n")
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    assert not any("E_PRIVATE" in o for o in out)
+
+
+def test_rebound_shadow_fix_does_not_hollow_route_c() -> None:
+    """补收集只放宽遮蔽侧：未遮蔽的模块私有访问仍须报，且同文件内
+    遮蔽名与未遮蔽名互不干扰（名字级判定不回归）。"""
+    src = ("from sessionpack import archive, catalog\n"
+           "vals = [catalog._priv() for catalog in rows]\n"
+           "x = archive._failure_text(e)\n")
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    priv = [o for o in out if "E_PRIVATE" in o]
+    assert len(priv) == 1
+    assert "archive" in priv[0] and "catalog" not in priv[0]

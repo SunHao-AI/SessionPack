@@ -175,10 +175,15 @@ def _dotted(node: ast.AST) -> str | None:
 
 def _rebound_names(tree: ast.AST) -> set[str]:
     """文件内被重新绑定过的名字（赋值/增广赋值/带注解赋值/海象/for/with/
-    except-as 目标、函数参数）。属性链根名命中即保守放行（Spec 4 §3.2）：
-    同名实例会误报为模块私有访问，无法静态断定时宁可漏报不误报。
-    取舍在案：'先 import 模块、后同名重绑定、再跨模块访问私有属性'的
-    真实违例会被漏掉——该模式极罕见且本身是坏味道，接受。"""
+    except-as 目标、函数与 lambda 参数、推导式目标）。属性链根名命中即保守
+    放行（Spec 4 §3.2）：同名实例会误报为模块私有访问，无法静态断定时
+    宁可漏报不误报。
+    取舍在案：遮蔽判定是文件级、不区分作用域，故
+    '先 import 模块、后同名重绑定、再跨模块访问私有属性'的真实违例会被
+    漏掉——该模式极罕见且本身是坏味道，接受（Spec 5 §2 复核后维持）。
+    推导式目标与 lambda 形参在 Spec 5 §2 补入：二者都是局部变量，此前
+    未收集会让 `[c._priv() for c in rows]`、`lambda conn: conn._priv()`
+    这类合法代码被误报。"""
     names: set[str] = set()
 
     def _add(t: ast.expr | None) -> None:
@@ -190,6 +195,12 @@ def _rebound_names(tree: ast.AST) -> set[str]:
         elif isinstance(t, ast.Starred):
             _add(t.value)
 
+    def _add_args(a: ast.arguments) -> None:
+        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs,
+                    a.vararg, a.kwarg]:
+            if arg is not None:
+                names.add(arg.arg)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
@@ -198,17 +209,17 @@ def _rebound_names(tree: ast.AST) -> set[str]:
             _add(node.target)
         elif isinstance(node, (ast.For, ast.AsyncFor)):
             _add(node.target)
+        elif isinstance(node, ast.comprehension):
+            _add(node.target)
         elif isinstance(node, ast.withitem):
             _add(node.optional_vars)
         elif isinstance(node, ast.ExceptHandler):
             if node.name:
                 names.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            a = node.args
-            for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs,
-                        a.vararg, a.kwarg]:
-                if arg is not None:
-                    names.add(arg.arg)
+            _add_args(node.args)
+        elif isinstance(node, ast.Lambda):
+            _add_args(node.args)
     return names
 
 
@@ -229,6 +240,7 @@ def check_source(src: str, rel: str,
     exempt_lines = _exempt_lines(src, rel, warn_sink)
 
     imported_names: dict[str, str] = {}  # 本地名 -> 定义它的绝对模块
+    head_bound: set[str] = set()  # 无别名点路径导入绑定的首段根名（Spec 5 §4）
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -247,6 +259,10 @@ def check_source(src: str, rel: str,
                             f"{rel}:{node.lineno}: E_PRIVATE 'import' pulls "
                             f"private '{hit}' from '{a.name}'")
                     imported_names[a.asname or a.name.split(".")[0]] = a.name
+                    if a.asname is None and "." in a.name:
+                        # 无别名点路径导入绑的是首段（import sessionpack.cli
+                        # 只把 sessionpack 绑进本地名），Spec 5 §4 用。
+                        head_bound.add(a.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
             amod = _abs_from_import(node, pkg)
             # `from sessionpack import X` / `from . import X`：X 是子模块，
@@ -286,13 +302,20 @@ def check_source(src: str, rel: str,
     rebound = _rebound_names(tree)
     facade_ok = rel.startswith(RENDER_ALLOWED_PREFIX)
     # 门面属性链：把门面（sessionpack.cli）以任何名字绑进本文件后取 `.output`
-    # （`import sessionpack.cli` + `cli.output.render(...)`、
-    # `from sessionpack import cli` + `cli.output.render(...)`、
+    # （`from sessionpack import cli` + `cli.output.render(...)`、
+    # `import sessionpack.cli as c` + `c.output.render(...)`、
     # `import sessionpack` + `sessionpack.cli.output.render(...)`），
     # 运行时与直接 import sessionpack.cli.output 等价，同样按渲染层引用处理。
+    # Spec 5 §4 两处收窄（均为消 FP 方向，真阳性三种拼写照旧）：
+    # 1) 头绑定剔除——`import sessionpack.cli` 只把首段 sessionpack 绑进
+    #    本地名，sessionpack 随时可被重绑定成无关对象，且 `sessionpack.output`
+    #    不构成渲染层路径（真路径由下方全路径匹配覆盖），故不登记为根；
+    # 2) 尊重 rebound——根名在文件内被重绑定过（形参/赋值等）时保守放行，
+    #    与 route C 政策对齐。
     if not facade_ok:
         facade_roots = {n for n, o in imported_names.items()
-                        if o in (RENDER_FACADE, RENDER_TARGET)}
+                        if o in (RENDER_FACADE, RENDER_TARGET)
+                        and n not in head_bound} - rebound
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Attribute)
                     and node.attr == RENDER_FACADE_ATTR):
