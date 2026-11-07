@@ -286,3 +286,26 @@ def test_allow_private_comment_on_clean_line_is_harmless():
     out = lint_imports.check_source(src, "sessionpack/sync.py", warns)
     assert out == []
     assert any("W_ALLOW_PRIVATE" in w for w in warns)
+
+
+def test_package_intra_module_absolute_private_import_exempt() -> None:
+    """拆包后包内互导（Task 3 §4）：绝对路径 from-import 私有符号放行。
+
+    run.py 里 `from sessionpack.importer.state import _FileState` 是同包
+    内部协作，不得报 E_PRIVATE；同样的导入换到包外文件仍须报。
+    """
+    src = "from sessionpack.importer.state import _FileState\n"
+    assert lint_imports.check_source(src, "sessionpack/importer/run.py") == []
+    out = lint_imports.check_source(src, "sessionpack/cli/read_cmds.py")
+    assert any("E_PRIVATE" in item for item in out)
+
+
+def test_flat_module_private_import_still_checked_after_I1() -> None:
+    """I-1 收窄回归：顶层扁平模块间 from-import 私有仍须机械检出。
+
+    同包豁免的包段比较若不加 `pkg != "sessionpack"`，扁平模块
+    （pkg 恒为 sessionpack）会命中该豁免而整体漏报这条唯一的机械检出路径。
+    """
+    src = "from sessionpack.archive import _write_row\n"
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    assert any("E_PRIVATE" in item for item in out)

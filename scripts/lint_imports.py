@@ -234,11 +234,14 @@ def check_source(src: str, rel: str,
         # owner 是导入来源的完整模块路径（sessionpack.importer.state），而
         # source_module 只是模块键（'importer'），故同包豁免须按 owner 的包段
         # 与 pkg 比较：否则包内互导私有符号（Spec 4 §4「包内互导同包豁免」）
-        # 会被误报为跨模块私有访问。
+        # 会被误报为跨模块私有访问。pkg != "sessionpack" 是必要的：对顶层扁平
+        # 模块 pkg 恒为 "sessionpack"，不加此条件会顺带关掉扁平模块跨模块私有
+        # 导入的机械检测（Task 3 审查 I-1）。
         if (_is_private(local)
                 and not (owner == source_module
                          or owner.endswith("." + source_module)
-                         or owner.rpartition(".")[0] == pkg)):
+                         or (pkg != "sessionpack"
+                             and owner.rpartition(".")[0] == pkg))):
             out.append(
                 f"{rel}:0: E_PRIVATE module attribute '{local}' imported "
                 f"from '{owner}' is private")
