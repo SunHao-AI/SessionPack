@@ -144,14 +144,18 @@ Definition of Done：
 | `338f35c` | C1 E_DOM_IMPORT：渲染层包内专属 + 3 测试 | Approved |
 | `be94369` | C2 E_PRIVATE 行级豁免 + 遮蔽场景保守放行 + 4 测试 | Approved |
 | `48c4c46` | C3 importer/ 拆包（state 88 / plan 95 / run 206 行，`__init__` 门面 7 行）+ lint_imports 同包豁免配套 + 1 测试 | Approved |
-| 本次 | C4 DoD 核查、Task 3 审查 I-1 收窄、守卫回归测试补 2、backlog 校正、本节 | — |
+| `bd26a1b` | C4 前半：E_PRIVATE 同包豁免收窄（I-1）+ 守卫回归测试补 2 | 核查任务，随 C4 审查 |
+| `873a1a6` | C4 后半：本节落地记录 + §4 措辞精确化 + backlog 校正记录 | 同上 |
+| `22158df` | Final Review fix wave：门面拼写封堵 + marker 改 tokenize + 门面测试 rglob + 10 测试 | Approved（scoped re-review） |
 
-**DoD 实测**：`python scripts/check.py` 四步全绿（206 passed，
-ruff / mypy 干净）；BASELINE == `set()`；`git grep
+**DoD 实测**：C4 收尾时 `python scripts/check.py` 四步全绿
+（ruff / mypy 干净），Final Review fix wave（`22158df`）后复跑仍四步
+全绿（216 passed）；BASELINE == `set()`；`git grep
 "lint-imports: allow-private" -- sessionpack/` 为 0 处；
 `git grep "cli.output" -- sessionpack/` 仅 `cli/read_cmds.py:18` 与
 `cli/write_cmds.py:24` 两处（均在 cli/ 包内）。测试数
-196 → 199（C1）→ 203（C2）→ 204（C3）→ 206（C4 补守卫回归）。
+196 → 199（C1）→ 203（C2）→ 204（C3）→ 206（C4 补守卫回归）
+→ 216（fix wave +10）。
 
 **计划外但必要的实现改动**：`scripts/lint_imports.py` 的 E_PRIVATE
 from-import 同包豁免新增 `or owner.rpartition(".")[0] == pkg`
@@ -167,13 +171,39 @@ sessionpack.importer.state import _FileState`）的 owner 是完整模块路径�
 清单文件不符——`LAYER_OF` 已含 `"server": 4` 与 `"__main__": 4`，
 该盲区不存在，按 §5 结论在本文档记录校正，不回改已归档 spec。
 
-**已知遗留（移交 Final Review 裁决，未在本轮修）**：
+**Final Review 与 fix wave**：整支审查（`8fa6dc2..873a1a6`）裁定
+With fixes（Critical 0），三项 FIX NOW 已在 `22158df` 修复并经
+scoped re-review Approved：
 
-- P1（C1 审查，Important，计划强制）：E_DOM_IMPORT 可被
-  `from sessionpack.cli import output` 门面写法绕过，现状仓内 0 处。
-- P2（C2 审查，Important，计划强制）：`_rebound_names` 为文件级判定，
-  单个同名函数参数即可令该文件该模块的私有检查整体失效；另有 marker
-  裸行扫描可被字符串字面量误触（评审判 Minor）。
-- C1/C2/C3 审查累计 10+1 条 Minor 的 deferred 清单见
-  `.superpowers/sdd/2026-11-07-边界盲区机械化与importer拆包/progress.md`
-  与各 `task-N-review.md`。
+- P1：E_DOM_IMPORT 门面拼写绕过（`from sessionpack.cli import
+  output` / `import *` / 属性链 `sessionpack.cli.output`）——
+  from-import 分支与 route D 属性链检测均已封堵，包内合法写法
+  （`RENDER_ALLOWED_PREFIX` 前缀）不受影响；仓内运行时可达的
+  `import sessionpack.cli` + 裸 `cli.output.x` 属 NameError 死代码，
+  不扩面。
+- L4：行级豁免 marker 收集从裸行子串扫描改为 `tokenize.COMMENT`
+  token 判定，写在字符串字面量里的 marker 不再构成假豁免；
+  tokenize 失败时回退裸行扫描（语法错误已由 `ast.parse` 先行拦下）。
+- N-1：门面测试 `glob` 改 `rglob` 并加非空断言，杜绝空洞通过。
+
+**已知遗留（Final Review 裁决 DEFER，移交下一轮守卫加固 spec）**：
+
+- P2：`_rebound_names` 为文件级无作用域判定——单个同名函数参数即可
+  令该文件该模块的私有属性检查整体失效（漏报面）；lambda 形参与
+  推导式目标未收集（误报面）。双向清单：FN = 文件内任意位置
+  `def f(cli):` 之类同名重绑定；FP = `export = make_exporter()` 后
+  `export._render()` 之外的合法模块访问被遮蔽放行。
+- M-4：包内绝对导入（`from sessionpack.importer.state import
+  _FileState`）改相对导入后，`48c4c46` 加的同包豁免条款即可收回。
+- N-2：route D 的 `endswith` 判定存在同名包漏报（如
+  `sessionpack.data_cli` 撞 `cli` 后缀），属 Spec 2 以来的史前欠账。
+- Minor-1：`facade_roots` 收录本地绑定名，`import sessionpack.cli`
+  后对无关对象写 `sessionpack.output` 属性访问会误报（一行条件可收窄）。
+- Minor-2：门面属性链检测不尊重 `rebound`——`def f(cli)` 形参遮蔽
+  产生误报；`cli = sessionpack.cli` 重绑定后再链属性属漏报（与 P2 同根）。
+- Minor-3：同一 from-import 语句可同时报直接目标与门面拼写两条
+  E_DOM_IMPORT，重复但无害，接受。
+
+**已知边界（记录在案，非缺陷）**：守卫仅检 `sessionpack/` 树
+（`check_tree` 范围），`tests/` 与 `scripts/` 内的边界违规不在机械
+检查面内，属评审约定兜底。
