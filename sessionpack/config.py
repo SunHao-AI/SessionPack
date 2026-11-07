@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -30,9 +31,39 @@ def _read_toml(root: Path) -> tuple[dict, list[str]]:
     return (data, []) if isinstance(data, dict) else ({}, [])
 
 
+def _shape_warnings(data: dict) -> list[str]:
+    """[sync] 段的形状诊断：段名拼错/类型错/空值，消除静默失效。"""
+    section = data.get("sync")
+    if section is None:
+        close = difflib.get_close_matches("sync", list(data))
+        if close:
+            return [f"config.toml 段落 [{close[0]}] 疑为 [sync] 拼写错误，"
+                    "同步目录未生效"]
+        return []
+    if not isinstance(section, dict):
+        return ["config.toml 中 sync 应为 [sync] 表，同步目录未生效"]
+    raw = section.get("dir")
+    if raw is None:
+        return []
+    if not isinstance(raw, str):
+        return [f"config.toml 中 [sync].dir 应为字符串，"
+                f"实得 {type(raw).__name__}，同步目录未生效"]
+    if not raw:
+        return ["config.toml 中 [sync].dir 为空，同步目录未生效"]
+    return []
+
+
 def load_config(root: Path) -> tuple[dict, list[str]]:
-    """读取 <root>/config.toml；缺失或损坏按空配置处理并返回警告。"""
-    return _read_toml(root)
+    """读取 <root>/config.toml；缺失或损坏按空配置处理并返回警告。
+
+    警告 = 致命（解析失败）+ 形状诊断（§CFG-2）；写侧请用 _read_toml。
+    """
+    data, warnings = _read_toml(root)
+    if warnings or not isinstance(data, dict):
+        return data, warnings
+    if (Path(root) / CONFIG_NAME).is_file():
+        warnings = warnings + _shape_warnings(data)
+    return data, warnings
 
 
 def sync_dir(root: Path) -> Path | None:

@@ -135,14 +135,18 @@ def cmd_export(args) -> int:
     return emit(run_export(args), False)
 
 
+def _missing_dir_errors(lay) -> list[str]:
+    """「未指定同步目录」文案 + config 诊断（拼错段名等），使提示自洽。"""
+    _, warnings = config.load_config(lay.root)
+    return ["未指定同步目录：请加 --dir DIR，"
+            "或先运行 sessionpack push --dir DIR 落配置"] + warnings
+
+
 def run_push(args) -> CommandResult:
     lay = layout(args)
     target = resolve_sync_dir(args, lay)
     if target is None:
-        return CommandResult(
-            EXIT_USAGE,
-            err_lines=["未指定同步目录：请加 --dir DIR，"
-                       "或先运行 sessionpack push --dir DIR 落配置"])
+        return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
     result = sync.push_archives(lay.archives, target, dry_run=args.dry_run)
     payload = {
         "sync_dir": str(target),
@@ -180,10 +184,7 @@ def run_pull(args) -> CommandResult:
     lay = layout(args)
     target = resolve_sync_dir(args, lay)
     if target is None:
-        return CommandResult(
-            EXIT_USAGE,
-            err_lines=["未指定同步目录：请加 --dir DIR，"
-                       "或先运行 sessionpack push --dir DIR 落配置"])
+        return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
     if not target.is_dir():
         return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
     conn = catalog.connect(lay.catalog)

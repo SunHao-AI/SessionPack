@@ -128,6 +128,17 @@ def test_run_push_dry_run_and_real(tmp_path: Path) -> None:
     assert real.out_lines[0].startswith("已推送 0 个包共 0 字节")
 
 
+def test_run_push_missing_dir_includes_config_diagnosis(tmp_path: Path) -> None:
+    """Spec 6 CFG-2：段名拼错时错误输出含诊断，不再只说"未指定"。"""
+    data_dir = _data_dir(tmp_path)
+    (data_dir / "config.toml").write_text('[snyc]\ndir = "D"\n',
+                                          encoding="utf-8")
+    res = run_push(_ns(data_dir=str(data_dir), dir=None))
+    assert res.exit_code == 2
+    assert any("未指定同步目录" in line for line in res.err_lines)
+    assert any("[snyc]" in line and "sync" in line for line in res.err_lines)
+
+
 def test_run_push_config_rejected_still_reports_push(tmp_path: Path) -> None:
     """Spec 6 CFG-1：落配置拒写时，推送成功事实仍报告，且退出码为错误。"""
     data_dir = _data_dir(tmp_path)

@@ -142,3 +142,33 @@ def test_set_sync_dir_repairs_scalar_sync(tmp_path: Path) -> None:
     data, warnings = config.load_config(tmp_path)
     assert warnings == []
     assert data["other"] == {"x": 1}
+
+
+# ---- Spec 6 CFG-2：形状诊断 ----
+
+def test_shape_warning_near_section_name(tmp_path: Path) -> None:
+    _keep(tmp_path, '[snyc]\ndir = "D"\n')
+    data, warnings = config.load_config(tmp_path)
+    assert config.sync_dir(tmp_path) is None
+    assert any("[snyc]" in w and "sync" in w for w in warnings)
+
+
+def test_shape_warning_dir_wrong_type(tmp_path: Path) -> None:
+    _keep(tmp_path, "[sync]\ndir = 123\n")
+    _, warnings = config.load_config(tmp_path)
+    assert any("dir" in w and "int" in w for w in warnings)
+
+
+def test_shape_warning_empty_dir(tmp_path: Path) -> None:
+    _keep(tmp_path, '[sync]\ndir = ""\n')
+    _, warnings = config.load_config(tmp_path)
+    assert any("为空" in w for w in warnings)
+
+
+def test_shape_no_warning_for_normal_missing_and_other(tmp_path: Path) -> None:
+    """防噪音回归：正常配置、无配置、无关段名均零警告。"""
+    assert config.load_config(tmp_path)[1] == []          # 无文件
+    _keep(tmp_path, '[sync]\ndir = "D"\n')                # 正常
+    assert config.load_config(tmp_path)[1] == []
+    _keep(tmp_path, '[other]\nx = 1\n')                   # 无关段不误报
+    assert config.load_config(tmp_path)[1] == []
