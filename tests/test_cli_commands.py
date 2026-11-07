@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import zipfile
 from pathlib import Path
 
 from sessionpack import archive, catalog
 from sessionpack.cli import build_parser, main
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.cli.read_cmds import run_doctor, run_scan, run_verify
-from sessionpack.cli.write_cmds import run_export, run_import, run_pull, run_push
-from sessionpack.model import MessageRecord
+from sessionpack.cli.write_cmds import (
+    run_export,
+    run_import,
+    run_pull,
+    run_push,
+    run_rebuild,
+)
+from sessionpack.model import MessageRecord, ProjectRecord
 
 
 def _ns(**kwargs) -> argparse.Namespace:
@@ -307,3 +314,169 @@ def test_serve_guard_without_catalog_is_usage_error(tmp_path: Path,
     captured = capsys.readouterr()
     assert code == 2
     assert captured.err == "索引不存在，请先运行 sessionpack import\n"
+
+
+# ---------- Spec 7 D3：rebuild --fts / --from-archives ----------
+
+
+def _seed_rebuild_db(tmp_path: Path) -> Path:
+    """1 项目 1 会话 2 条含「冲锋衣」的消息，返回 data_dir。"""
+    data_dir = _data_dir(tmp_path)
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_project(conn, ProjectRecord(
+        project_id="-d-Work-RepoA", display_name="RepoA",
+        local_path_hint="", source_kind="trae-memory"))
+    for mid, seq in (("m1", 1), ("m2", 2)):
+        catalog.upsert_message(conn, MessageRecord(
+            session_id="a" * 24, message_id=mid, seq=seq,
+            ts="2026-01-01 10:00:00", intent="导入会话", outcome="冲锋衣选购",
+            actions=(), learned=(), meta=None, body="冲锋衣选购建议",
+            project_id="-d-Work-RepoA", source_kind="trae-memory"))
+    conn.commit()
+    conn.close()
+    return data_dir
+
+
+def _drop_fts_row(data_dir: Path, message_id: str) -> None:
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    conn.execute("DELETE FROM message_fts WHERE message_id=?", (message_id,))
+    conn.commit()
+    conn.close()
+
+
+def test_run_rebuild_fts_restores_search_after_drift(tmp_path: Path) -> None:
+    """§4 验收：漂移库 --fts 后 search_messages('冲锋衣') 恢复命中、对账一致。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    _drop_fts_row(data_dir, "m2")
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    assert len(catalog.search_messages(conn, "冲锋衣")) == 1
+    conn.close()
+
+    res = run_rebuild(_ns(data_dir=str(data_dir), fts=True))
+    assert res.exit_code == 0
+    assert res.out_lines == ["FTS 重建完成：2 条"]
+
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    try:
+        assert len(catalog.search_messages(conn, "冲锋衣")) == 2
+        from sessionpack.catalog.read import reconcile_fts
+        assert reconcile_fts(conn)["drift"] is False
+    finally:
+        conn.close()
+
+
+def test_run_rebuild_fts_is_idempotent(tmp_path: Path) -> None:
+    """§4 验收：幂等——连跑两次结果一致，行数不翻倍。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    first = run_rebuild(_ns(data_dir=str(data_dir)))  # --fts 是缺省模式
+    second = run_rebuild(_ns(data_dir=str(data_dir), fts=True))
+    assert first.exit_code == second.exit_code == 0
+    assert first.out_lines == second.out_lines == ["FTS 重建完成：2 条"]
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    try:
+        assert catalog.stats(conn)["fts_rows"] == 2
+    finally:
+        conn.close()
+
+
+def test_run_rebuild_fts_missing_catalog_is_usage_error(tmp_path: Path) -> None:
+    """§4 验收：库不存在 → EXIT_USAGE，且不隐式建库。"""
+    data_dir = _data_dir(tmp_path)
+    res = run_rebuild(_ns(data_dir=str(data_dir), fts=True))
+    assert res.exit_code == 2
+    assert res.err_lines == ["索引不存在，请先运行 sessionpack import"]
+    assert res.data is None
+
+
+def test_run_rebuild_fts_json_payload(tmp_path: Path) -> None:
+    """§4 CLI 契约：json 模式返回 {"rebuilt": n, "fts": {…对账…}}。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    _drop_fts_row(data_dir, "m1")
+    res = run_rebuild(_ns(data_dir=str(data_dir), fts=True, json=True))
+    assert res.exit_code == 0
+    assert res.out_lines == []
+    assert res.data["rebuilt"] == 2
+    assert res.data["fts"]["drift"] is False
+    assert res.data["fts"]["fts_rows"] == 2
+
+
+def _build_project_archive(data_dir: Path) -> archive.ArchiveResult:
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    try:
+        return archive.build_archive(conn, data_dir / "archives",
+                                     "-d-Work-RepoA")
+    finally:
+        conn.close()
+
+
+def _corrupt_zip(src: Path, dst: Path) -> None:
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.endswith("messages.ndjson"):
+                data = b"corrupted\n"
+            zout.writestr(item, data)
+
+
+def test_run_rebuild_from_archives_requires_yes(tmp_path: Path) -> None:
+    """§5 验收：缺 --yes 拒绝执行（EXIT_USAGE 并说明后果）。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    res = run_rebuild(_ns(data_dir=str(data_dir), from_archives=True,
+                          yes=False))
+    assert res.exit_code == 2
+    assert "--yes" in res.err_lines[0]
+    assert "丢弃" in res.err_lines[0]
+
+
+def test_run_rebuild_from_archives_without_archives(tmp_path: Path) -> None:
+    """§5 验收：无归档包 → 失败并给出 import 指引。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    res = run_rebuild(_ns(data_dir=str(data_dir), from_archives=True,
+                          yes=True))
+    assert res.exit_code == 1
+    assert "无归档包" in res.err_lines[0]
+    assert "sessionpack import --memory-root" in res.err_lines[0]
+
+
+def test_run_rebuild_from_archives_success_with_backup(tmp_path: Path) -> None:
+    """§5 验收：正常重建后 stats 与源一致、.bak 存在、搜索恢复命中。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    _build_project_archive(data_dir)
+    _drop_fts_row(data_dir, "m1")  # 顺带验证 staging 自检兜底后交付一致库
+
+    res = run_rebuild(_ns(data_dir=str(data_dir), from_archives=True,
+                          yes=True, json=True))
+    assert res.exit_code == 0
+    assert res.data["ok"] is True
+    assert res.data["sessions"] == 1
+    assert res.data["messages"] == 2
+    assert res.data["fts_rows"] == 2
+    assert len(res.data["packages"]) == 1
+    backup = Path(res.data["backup"])
+    assert backup.name == "catalog.sqlite.bak"
+    assert backup.is_file()
+
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    try:
+        assert len(catalog.search_messages(conn, "冲锋衣")) == 2
+    finally:
+        conn.close()
+    assert not list(data_dir.glob("catalog.sqlite.staging*"))
+
+
+def test_run_rebuild_from_archives_bad_zip_fail_closed(tmp_path: Path) -> None:
+    """§5 验收：任一 zip 校验 BAD → 中止，原库字节不变、无 staging 残留。"""
+    data_dir = _seed_rebuild_db(tmp_path)
+    built = _build_project_archive(data_dir)
+    _corrupt_zip(built.path, data_dir / "archives" / "bad.zip")
+    before = (data_dir / "catalog.sqlite").read_bytes()
+
+    res = run_rebuild(_ns(data_dir=str(data_dir), from_archives=True,
+                          yes=True))
+    assert res.exit_code == 1
+    assert "bad.zip" in res.err_lines[0]
+    assert "原索引未改动" in res.err_lines[0]
+    assert (data_dir / "catalog.sqlite").read_bytes() == before
+    assert not list(data_dir.glob("catalog.sqlite.staging*"))
+    assert not (data_dir / "catalog.sqlite.bak").exists()

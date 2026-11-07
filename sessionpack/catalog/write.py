@@ -19,6 +19,36 @@ class WriteResult(NamedTuple):
     session_created: bool
 
 
+def rebuild_fts(conn: sqlite3.Connection) -> int:
+    """从 messages.body 全量重建 message_fts（单事务）。
+
+    派生索引修复：不另设备份；调用方在异常时 rollback，
+    message_fts 即维持原状。返回重建后的 FTS 行数。
+    """
+    rows = conn.execute(
+        "SELECT session_id, message_id, body FROM messages ORDER BY session_id, seq"
+    ).fetchall()
+    conn.execute("DELETE FROM message_fts")
+    conn.executemany(
+        "INSERT INTO message_fts(session_id, message_id, text) VALUES(?,?,?)",
+        [(r["session_id"], r["message_id"], r["body"] or "") for r in rows],
+    )
+    conn.commit()
+    return conn.execute("SELECT COUNT(*) FROM message_fts").fetchone()[0]
+
+
+def clear_derived_rows(conn: sqlite3.Connection) -> None:
+    """清空 sessions/messages/message_fts 三表（Spec 7 §5.2 fresh 重建前置）。
+
+    projects 与 import_runs/import_files 保留——项目元信息无害，
+    导入进度由调用方决定去留（fresh 走全新全量重导，旧进度无意义但无害）。
+    """
+    conn.execute("DELETE FROM message_fts")
+    conn.execute("DELETE FROM messages")
+    conn.execute("DELETE FROM sessions")
+    conn.commit()
+
+
 def upsert_project(conn: sqlite3.Connection, project: ProjectRecord) -> None:
     conn.execute(
         "INSERT INTO projects(project_id, display_name, local_path_hint, source_kind)"

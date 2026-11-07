@@ -67,4 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
     pull.add_argument("--data-dir", default=None)
     pull.add_argument("--json", action="store_true")
+
+    rebuild = sub.add_parser("rebuild", help="重建索引（FTS 或从归档包全量重建）")
+    mode = rebuild.add_mutually_exclusive_group()
+    mode.add_argument("--fts", action="store_true",
+                      help="只重建 FTS 索引（缺省模式）")
+    mode.add_argument("--from-archives", action="store_true",
+                      help="从 archives/*.zip 在 staging 上全量重建后原子换入")
+    rebuild.add_argument("--yes", action="store_true",
+                         help="确认 --from-archives 会丢弃未归档的会话")
+    rebuild.add_argument("--data-dir", default=None)
+    rebuild.add_argument("--json", action="store_true")
     return parser

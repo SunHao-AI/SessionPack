@@ -23,6 +23,7 @@ from sessionpack.cli.common import (
     resolve_sync_dir,
 )
 from sessionpack.cli.output import CommandResult, emit
+from sessionpack.rebuild import rebuild_from_archives, rebuild_fts_index
 
 
 def run_import(args) -> CommandResult:
@@ -223,3 +224,47 @@ def run_pull(args) -> CommandResult:
 
 def cmd_pull(args) -> int:
     return emit(run_pull(args), args.json)
+
+
+def run_rebuild(args) -> CommandResult:
+    lay = layout(args)
+    if getattr(args, "from_archives", False):
+        if not getattr(args, "yes", False):
+            return CommandResult(EXIT_USAGE, err_lines=[
+                "rebuild --from-archives 会丢弃仅存在于记忆树、未归档的会话，"
+                "请加 --yes 确认"])
+        report = rebuild_from_archives(lay, assume_yes=True)
+        if not report.ok:
+            return CommandResult(EXIT_ERROR, err_lines=[report.error or "重建失败"])
+        if args.json:
+            return CommandResult(EXIT_OK, data=report.as_dict())
+        lines = [f"全量重建完成：归档 {len(report.packages)} 个，"
+                 f"会话 {report.sessions}，消息 {report.messages}，"
+                 f"FTS {report.fts_rows} 行"]
+        for item in report.packages:
+            lines.append(f"  {item['name']}：会话 {item['sessions']}，"
+                         f"消息 {item['messages']}")
+        if report.backup:
+            lines.append(f"原索引备份：{report.backup}")
+        return CommandResult(EXIT_OK, out_lines=lines)
+
+    # --fts 缺省模式：库不存在属用法错误，不隐式建库
+    if not require_catalog(lay.catalog):
+        return CommandResult(EXIT_USAGE,
+                             err_lines=["索引不存在，请先运行 sessionpack import"])
+    conn = catalog.connect(lay.catalog)
+    try:
+        rebuilt, recon = rebuild_fts_index(conn)
+    except (CatalogVersionError, CatalogSchemaError) as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
+    except sqlite3.Error as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
+    finally:
+        conn.close()
+    if args.json:
+        return CommandResult(EXIT_OK, data={"rebuilt": rebuilt, "fts": recon})
+    return CommandResult(EXIT_OK, out_lines=[f"FTS 重建完成：{rebuilt} 条"])
+
+
+def cmd_rebuild(args) -> int:
+    return emit(run_rebuild(args), args.json)

@@ -28,6 +28,7 @@ LAYER_OF: dict[str, int] = {
     "catalog": 2,
     "catalog.conn": 2, "catalog.read": 2, "catalog.write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
+    "rebuild": 3,
     "cli": 4, "server": 4,
     # python -m sessionpack 的入口薄壳，与 cli 同为最高消费层
     "__main__": 4,
@@ -42,7 +43,7 @@ SQL_WRITE = re.compile(
 )
 
 # E_SQL 精确豁免集合：以实跑探测确认的最小合法写文件集
-# （conn.py 含 SCHEMA 的 CREATE TABLE DDL 1 处，write.py 含写语句 15 处；
+# （conn.py 含 SCHEMA 的 CREATE TABLE DDL 1 处，write.py 含写语句 20 处；
 # read.py/__init__.py 实测 0 处，不得加入本集合）。
 SQL_WRITE_ALLOWED = frozenset({
     "sessionpack/catalog/conn.py",

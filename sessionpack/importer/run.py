@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sessionpack import catalog
 from sessionpack.adapters.base import MemoryAdapter
+from sessionpack.catalog.write import clear_derived_rows
 from sessionpack.importer.plan import _commit_progress, _plan_files
 from sessionpack.importer.state import (
     BATCH_ROWS,
@@ -37,11 +38,16 @@ def import_source(
     until: str | None = None,
     crash_after_rows: int | None = None,
     stop_after_rows: int | None = None,
+    fresh: bool = False,
 ) -> ImportStats:
     started = time.perf_counter()
     root = Path(root)
     conn = catalog.connect(Path(catalog_path))
     catalog.init_schema(conn)
+    if fresh:
+        # Spec 7 FTS-3：先清空派生行（消息/会话/FTS），projects 与导入进度保留，
+        # 配合 reparse=True 实现"从记忆树全量重灌"。
+        clear_derived_rows(conn)
     stats = ImportStats(run_id=uuid.uuid4().hex)
     catalog.begin_import_run(
         conn, stats.run_id, adapter.id, adapter.version, _now())
