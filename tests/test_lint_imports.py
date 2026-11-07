@@ -244,3 +244,45 @@ def test_dom_import_rule_hits_relative_import_outside_cli():
     src = "from .cli.output import emit\n"
     out = lint_imports.check_source(src, "sessionpack/server.py")
     assert any("E_DOM_IMPORT" in o for o in out)
+
+
+def test_private_rule_ok_module_name_rebound_to_instance():
+    """遮蔽豁免：import 进来的名字在文件内被重绑定（赋值/参数等），
+    属性链根名无法静态断定是模块引用，保守放行（Spec 4 §3.2）。"""
+    src = ("from sessionpack import export\n"
+           "export = make_thing()\n"
+           "x = export._render()\n")
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    assert not any("E_PRIVATE" in o for o in out)
+
+
+def test_private_rule_still_hits_names_without_rebinding():
+    """收紧是名字级的：被遮蔽的 export 放行，未遮蔽的 archive 照常报。"""
+    src = ("from sessionpack import archive\n"
+           "def handle(export):\n"
+           "    export._render()\n"
+           "    return archive._failure_text(e)\n")
+    out = lint_imports.check_source(src, "sessionpack/sync.py")
+    priv = [o for o in out if "E_PRIVATE" in o]
+    assert len(priv) == 1
+    assert priv[0].startswith("sessionpack/sync.py:4: E_PRIVATE")
+
+
+def test_private_line_exempt_by_comment():
+    """行级豁免：行尾注释放行该行 E_PRIVATE，且输出 W_ALLOW_PRIVATE 警告。"""
+    src = ("from sessionpack import archive\n"
+           "x = archive._failure_text(e)  # lint-imports: allow-private\n")
+    warns: list[str] = []
+    out = lint_imports.check_source(src, "sessionpack/sync.py", warns)
+    assert not any("E_PRIVATE" in o for o in out)
+    assert any("W_ALLOW_PRIVATE" in w for w in warns)
+
+
+def test_allow_private_comment_on_clean_line_is_harmless():
+    """注释加在无违规行：不产生违规，仍出警告（评审可见）。"""
+    src = ("from sessionpack import archive\n"
+           "x = archive.build(p)  # lint-imports: allow-private\n")
+    warns: list[str] = []
+    out = lint_imports.check_source(src, "sessionpack/sync.py", warns)
+    assert out == []
+    assert any("W_ALLOW_PRIVATE" in w for w in warns)

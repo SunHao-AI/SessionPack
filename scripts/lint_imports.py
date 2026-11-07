@@ -53,6 +53,12 @@ SQL_WRITE_ALLOWED = frozenset({
 RENDER_TARGET = "sessionpack.cli.output"
 RENDER_ALLOWED_PREFIX = "sessionpack/cli/"
 
+# E_PRIVATE 行级豁免注释（Spec 4 §3.1）：只放行该行号上的 E_PRIVATE，
+# 不豁免 E_LAYER / E_DOM_IMPORT / E_SQL；被豁免行以 W_ALLOW_PRIVATE 警告
+# 输出，防静默滥用。属性链跨多行时报行是 ast.Attribute.lineno（首行），
+# 注释须落在该行。
+ALLOW_PRIVATE_MARK = "# lint-imports: allow-private"
+
 # 只减不增：修复一个删一行；禁止向其中新增条目来"解决"新违规。
 BASELINE: set[str] = set()
 
@@ -125,6 +131,45 @@ def _is_private(name: str) -> bool:
     return name.startswith("_") and not _is_dunder(name)
 
 
+def _rebound_names(tree: ast.AST) -> set[str]:
+    """文件内被重新绑定过的名字（赋值/增广赋值/带注解赋值/海象/for/with/
+    except-as 目标、函数参数）。属性链根名命中即保守放行（Spec 4 §3.2）：
+    同名实例会误报为模块私有访问，无法静态断定时宁可漏报不误报。
+    取舍在案：'先 import 模块、后同名重绑定、再跨模块访问私有属性'的
+    真实违例会被漏掉——该模式极罕见且本身是坏味道，接受。"""
+    names: set[str] = set()
+
+    def _add(t: ast.expr | None) -> None:
+        if isinstance(t, ast.Name):
+            names.add(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for elt in t.elts:
+                _add(elt)
+        elif isinstance(t, ast.Starred):
+            _add(t.value)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                _add(t)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr)):
+            _add(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            _add(node.target)
+        elif isinstance(node, ast.withitem):
+            _add(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                names.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs,
+                        a.vararg, a.kwarg]:
+                if arg is not None:
+                    names.add(arg.arg)
+    return names
+
+
 def check_source(src: str, rel: str,
                  warnings: list[str] | None = None) -> list[str]:
     """对单个文件源码返回违规列表（字符串格式见 BASELINE）。
@@ -139,6 +184,12 @@ def check_source(src: str, rel: str,
     pkg = posixpath.dirname(rel).replace("/", ".")
     out: list[str] = sql_violations(tree, rel)
     warn_sink = warnings if warnings is not None else []
+    exempt_lines: set[int] = set()
+    for no, line in enumerate(src.splitlines(), start=1):
+        if ALLOW_PRIVATE_MARK in line:
+            exempt_lines.add(no)
+            warn_sink.append(f"{rel}:{no}: W_ALLOW_PRIVATE "
+                             f"该行由注释豁免 E_PRIVATE")
 
     imported_names: dict[str, str] = {}  # 本地名 -> 定义它的绝对模块
     for node in ast.walk(tree):
@@ -187,13 +238,15 @@ def check_source(src: str, rel: str,
                 f"{rel}:0: E_PRIVATE module attribute '{local}' imported "
                 f"from '{owner}' is private")
 
+    rebound = _rebound_names(tree)
     # 属性访问: obj._attr(...) / obj._attr / obj.sub._attr(...)
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             root = node.value
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id in imported_names:
+            if (isinstance(root, ast.Name) and root.id in imported_names
+                    and root.id not in rebound):
                 owner = imported_names[root.id]
                 owner_tail = owner.removeprefix("sessionpack.").split(".")[0]
                 if owner_tail != source_module and owner_tail != "sessionpack":
@@ -250,6 +303,9 @@ def check_source(src: str, rel: str,
                 out.append(
                     f"{rel}:{node.lineno}: E_LAYER import "
                     f"L{my_layer} -> L{tgt_layer} ({source_module} -> {tgt})")
+    if exempt_lines:
+        out = [v for v in out if not ("E_PRIVATE" in v
+                                      and int(v.split(":")[1]) in exempt_lines)]
     return sorted(set(out), key=lambda s: (s.split(":")[0], int(s.split(":")[1])))
 
 
