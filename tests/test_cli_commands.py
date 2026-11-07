@@ -10,6 +10,7 @@ from sessionpack.cli import build_parser, main
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.cli.read_cmds import run_doctor, run_scan, run_verify
 from sessionpack.cli.write_cmds import run_export, run_import, run_pull, run_push
+from sessionpack.model import MessageRecord
 
 
 def _ns(**kwargs) -> argparse.Namespace:
@@ -243,6 +244,51 @@ def test_run_pull_rejects_legacy_db(tmp_path: Path) -> None:
     assert res.exit_code == 1
     assert "content_hash" in res.err_lines[0]
     assert "rebuild --from-archives" in res.err_lines[0]
+
+
+def _seed_doctor_db(tmp_path: Path) -> Path:
+    data_dir = _data_dir(tmp_path)
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, MessageRecord(
+        session_id="a" * 24, message_id="m1", seq=1, ts="2026-01-01 10:00:00",
+        intent="导入会话", outcome="一致的正文", actions=(), learned=(),
+        meta=None, body="一致的正文", project_id="-d-Work-RepoA",
+        source_kind="trae-memory"))
+    conn.commit()
+    conn.close()
+    return data_dir
+
+
+def test_run_doctor_reports_reconcile_consistent(tmp_path: Path) -> None:
+    """Spec 7 D2：一致库 → 对账行「一致」、无索引警告、退出码 0。"""
+    data_dir = _seed_doctor_db(tmp_path)
+    res = run_doctor(_ns(data_dir=str(data_dir), json=False))
+    reconcile = [ln for ln in res.out_lines if ln.startswith("索引对账")]
+    assert len(reconcile) == 1
+    assert "一致" in reconcile[0]
+    assert not [ln for ln in res.out_lines if ln.startswith("索引警告")]
+    assert res.exit_code == 0
+    payload = run_doctor(_ns(data_dir=str(data_dir), json=True)).data
+    assert payload["catalog"]["fts"]["drift"] is False
+    assert payload["catalog"]["version"] == 1
+
+
+def test_run_doctor_flags_fts_drift(tmp_path: Path) -> None:
+    """Spec 7 D2：手删 FTS 一行 → 对账行漂移 + 索引警告 + warnings 非空。"""
+    data_dir = _seed_doctor_db(tmp_path)
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    conn.execute("DELETE FROM message_fts")
+    conn.commit()
+    conn.close()
+    res = run_doctor(_ns(data_dir=str(data_dir), json=False))
+    reconcile = [ln for ln in res.out_lines if ln.startswith("索引对账")]
+    assert "漂移" in reconcile[0]
+    warnings = [ln for ln in res.out_lines if ln.startswith("索引警告")]
+    assert warnings and "rebuild --fts" in warnings[0]
+    payload = run_doctor(_ns(data_dir=str(data_dir), json=True)).data
+    assert payload["warnings"]
+    assert payload["catalog"]["fts"]["drift"] is True
 
 
 def test_parser_still_builds_every_subcommand() -> None:

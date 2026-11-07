@@ -9,6 +9,7 @@ from sessionpack.catalog.conn import (
     CatalogVersionError,
     schema_version,
 )
+from sessionpack.catalog.read import reconcile_fts
 from sessionpack.importer import import_source
 from sessionpack.model import MessageRecord, TopicRecord
 
@@ -209,3 +210,39 @@ def test_legacy_db_missing_column_rejected(tmp_path: Path) -> None:
     assert "content_hash" in message
     assert "rebuild --from-archives" in message
     assert schema_version(conn) == 0  # 校验未通过前不打戳
+
+
+# ---- Spec 7 D2：FTS-1 doctor 对账 ----
+
+
+def test_reconcile_fts_consistent_and_no_fts_table(tmp_path: Path) -> None:
+    """一致库 drift=False；未建 message_fts 的库不算漂移。"""
+    conn = catalog.connect(tmp_path / "catalog.sqlite")
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, _msg("一致的正文"))
+    res = reconcile_fts(conn)
+    assert res == {"messages": 1, "fts_rows": 1, "fts_missing": 0,
+                   "fts_extra": 0, "drift": False}
+    conn.close()
+
+    bare = catalog.connect(tmp_path / "bare.sqlite")
+    bare.executescript("CREATE TABLE messages (session_id TEXT, message_id TEXT)")
+    assert reconcile_fts(bare) == {"messages": 0, "fts_rows": 0,
+                                   "fts_missing": 0, "fts_extra": 0,
+                                   "drift": False}
+
+
+def test_reconcile_fts_detects_drift(filled_db_conn) -> None:
+    """复刻探针 D：删 FTS 一行后 drift=True 且 missing=1，drift 前为 False。"""
+    conn = filled_db_conn
+    assert reconcile_fts(conn)["drift"] is False
+    key = conn.execute(
+        "SELECT session_id, message_id FROM message_fts LIMIT 1"
+    ).fetchone()
+    conn.execute("DELETE FROM message_fts WHERE session_id=? AND message_id=?",
+                 (key["session_id"], key["message_id"]))
+    conn.commit()
+    res = reconcile_fts(conn)
+    assert res["drift"] is True
+    assert res["fts_missing"] == 1
+    assert res["fts_extra"] == 0

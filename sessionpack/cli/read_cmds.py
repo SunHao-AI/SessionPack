@@ -48,6 +48,14 @@ def run_doctor(args) -> CommandResult:
     stats = catalog_info["stats"]
     lines.append(f"索引统计：项目 {stats['projects']}，会话 {stats['sessions']}，"
                  f"消息 {stats['messages']}，FTS {stats['fts_rows']}")
+    if catalog_info["ready"]:
+        fts = catalog_info["fts"]
+        verdict = "一致" if not fts["drift"] else (
+            f"漂移（缺失 {fts['fts_missing']}、多余 {fts['fts_extra']}）")
+        lines.append(f"索引对账：messages {stats['messages']} ↔ "
+                     f"message_fts {stats['fts_rows']}（{verdict}）")
+        if fts["drift"]:
+            lines.append("索引警告：可运行 sessionpack rebuild --fts 修复")
     sync = data["sync"]
     lines.append(f"同步目录：{sync['dir'] if sync['configured'] else '未配置'}")
     lines += [f"同步警告：{w}" for w in sync["warnings"]]

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from sessionpack import catalog, config
 from sessionpack.adapters import get_adapter
+from sessionpack.catalog.conn import schema_version
+from sessionpack.catalog.read import reconcile_fts
 from sessionpack.paths import Layout
 
 
@@ -57,6 +59,8 @@ def collect(memory_root: Path, layout: Layout) -> dict:
             "ready": False,
             "stats": {"projects": 0, "sessions": 0, "messages": 0, "fts_rows": 0},
             "tokenizer": "none",
+            "version": 0,
+            "fts": {"fts_missing": 0, "fts_extra": 0, "drift": False},
             "size_bytes": 0,
             "archives_bytes": 0,
         },
@@ -85,6 +89,18 @@ def collect(memory_root: Path, layout: Layout) -> dict:
                 result["catalog"]["ready"] = True
                 result["catalog"]["stats"] = catalog.stats(conn)
                 result["catalog"]["tokenizer"] = catalog.tokenizer_of(conn)
+                result["catalog"]["version"] = schema_version(conn)
+                fts = reconcile_fts(conn)
+                result["catalog"]["fts"] = {
+                    "fts_missing": fts["fts_missing"],
+                    "fts_extra": fts["fts_extra"],
+                    "drift": fts["drift"],
+                }
+                if fts["drift"]:
+                    miss, extra = fts["fts_missing"], fts["fts_extra"]
+                    result["warnings"].append(
+                        f"FTS 与 messages 漂移（缺失 {miss}、多余 {extra}），"
+                        "运行 sessionpack rebuild --fts 修复")
             else:
                 result["warnings"].append("索引未初始化，请重新运行 import")
         finally:

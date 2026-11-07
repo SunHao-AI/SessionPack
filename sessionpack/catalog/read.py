@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from sessionpack.catalog.conn import connect_readonly
+from sessionpack.catalog.conn import connect_readonly, tokenizer_of
 
 
 def has_schema(conn: sqlite3.Connection) -> bool:
@@ -137,6 +137,32 @@ def stats(conn: sqlite3.Connection) -> dict[str, int]:
         "messages": conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
         "fts_rows": conn.execute("SELECT COUNT(*) FROM message_fts").fetchone()[0],
     }
+
+
+def reconcile_fts(conn: sqlite3.Connection) -> dict:
+    """FTS 行存在性对账（Spec 7 FTS-1），只判存在性、不比对正文。
+
+    message_fts 未建（tokenizer_of 为 "none"）不算漂移，与 stats 现状语义
+    一致；计数相等走快速路径（两侧都从 messages 单调追加，等值时错位概率
+    可忽略，这是 doctor 的常开判据）；计数不等才付 set 差集成本拆精确值
+    （逐行 SQL 对账在 UNINDEXED 列上是 O(N×M)，实测 >2 分钟，排除）。
+    """
+    if tokenizer_of(conn) == "none":
+        return {"messages": 0, "fts_rows": 0, "fts_missing": 0,
+                "fts_extra": 0, "drift": False}
+    messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    fts_rows = conn.execute("SELECT COUNT(*) FROM message_fts").fetchone()[0]
+    missing = extra = 0
+    if messages != fts_rows:
+        msg_keys = {(row[0], row[1]) for row in conn.execute(
+            "SELECT session_id, message_id FROM messages")}
+        fts_keys = {(row[0], row[1]) for row in conn.execute(
+            "SELECT session_id, message_id FROM message_fts")}
+        missing = len(msg_keys - fts_keys)
+        extra = len(fts_keys - msg_keys)
+    return {"messages": messages, "fts_rows": fts_rows,
+            "fts_missing": missing, "fts_extra": extra,
+            "drift": missing > 0 or extra > 0}
 
 
 def load_import_files(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
