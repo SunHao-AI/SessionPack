@@ -73,6 +73,30 @@ def test_run_doctor_missing_memory_root_text_and_json(tmp_path: Path) -> None:
     assert res_json.out_lines == []
 
 
+def test_run_doctor_text_shows_sync_dir(tmp_path: Path) -> None:
+    """Spec 6 CFG-3：文本 doctor 显示同步目录状态。"""
+    data_dir = _data_dir(tmp_path)
+    res = run_doctor(_ns(memory_root=str(tmp_path / "nope"),
+                         data_dir=str(data_dir)))
+    assert any(line == "同步目录：未配置" for line in res.out_lines)
+
+    (data_dir / "config.toml").write_text(
+        '[sync]\ndir = "D:\\\\share"\n', encoding="utf-8")
+    res2 = run_doctor(_ns(memory_root=str(tmp_path / "nope"),
+                          data_dir=str(data_dir)))
+    assert any("同步目录：D:\\share" == line for line in res2.out_lines)
+
+
+def test_run_doctor_text_shows_sync_warnings(tmp_path: Path) -> None:
+    """Spec 6 CFG-3：config 解析失败时文本 doctor 逐行输出同步警告。"""
+    data_dir = _data_dir(tmp_path)
+    (data_dir / "config.toml").write_text("[sync\nbroken", encoding="utf-8")
+    res = run_doctor(_ns(memory_root=str(tmp_path / "nope"),
+                         data_dir=str(data_dir)))
+    assert any("同步警告：" in line and "解析失败" in line
+               for line in res.out_lines)
+
+
 def test_run_import_missing_memory_root_is_usage_error(tmp_path: Path) -> None:
     res = run_import(_ns(memory_root=str(tmp_path / "nope"),
                          data_dir=str(_data_dir(tmp_path)), archive=None,

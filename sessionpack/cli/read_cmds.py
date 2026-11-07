@@ -48,6 +48,9 @@ def run_doctor(args) -> CommandResult:
     stats = catalog_info["stats"]
     lines.append(f"索引统计：项目 {stats['projects']}，会话 {stats['sessions']}，"
                  f"消息 {stats['messages']}，FTS {stats['fts_rows']}")
+    sync = data["sync"]
+    lines.append(f"同步目录：{sync['dir'] if sync['configured'] else '未配置'}")
+    lines += [f"同步警告：{w}" for w in sync["warnings"]]
     return CommandResult(code, out_lines=lines)
 
 

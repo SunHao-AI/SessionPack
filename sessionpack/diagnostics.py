@@ -16,11 +16,8 @@ def private_db_path() -> Path:
 
 
 def _sync_section(root: Path) -> dict:
-    data, warnings = config.load_config(root)
-    section = data.get("sync")
-    raw = section.get("dir") if isinstance(section, dict) else None
-    target = (Path(raw).expanduser()
-              if isinstance(raw, str) and raw else None)
+    _, warnings = config.load_config(root)
+    target = config.sync_dir(root)
     if target is None:
         return {"configured": False, "dir": None, "exists": False,
                 "archives": 0, "bytes": 0, "warnings": warnings}
