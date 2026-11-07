@@ -93,7 +93,8 @@ sessionpack/importer/
 
 - 纯搬移：`import_source` 签名、返回值、逐分支行为等价，以 196 测试
   全绿为等价证明；不改任何逻辑。
-- 包内相对导入合法（守卫同包段边界豁免）；跨段符号（`_FileState` 等）
+- 包内互导（相对导入或模块名式绝对导入）合法（守卫同包段边界豁免，
+  顶层扁平模块不享此豁免）；跨段符号（`_FileState` 等）
   经 `state.py` 显式 import。
 - `LAYER_OF` 无需新增键：`importer.plan` / `importer.run` / `importer.state`
   经 `_layer_of()` 前缀键查不到后回落到 `importer: 3`（Spec 3 扩充①机制）。
@@ -131,3 +132,48 @@ Definition of Done：
   机械保证，非 grep 约定）。
 - `grep -r "lint-imports: allow-private" sessionpack/` 为 0 处
   （本 spec 落地时不应有任何豁免需求，出现即说明收紧失败，需回看设计）。
+
+## 7. 实施落地记录
+
+实施采 SDD（subagent-driven-development）逐 commit 闭环：实施者 →
+任务审查者（spec 合规 + 代码质量）→ ledger 记录。commit 号取自
+`git log --oneline` 实况。
+
+| commit | 内容 | 审查结论 |
+|--------|------|---------|
+| `338f35c` | C1 E_DOM_IMPORT：渲染层包内专属 + 3 测试 | Approved |
+| `be94369` | C2 E_PRIVATE 行级豁免 + 遮蔽场景保守放行 + 4 测试 | Approved |
+| `48c4c46` | C3 importer/ 拆包（state 88 / plan 95 / run 206 行，`__init__` 门面 7 行）+ lint_imports 同包豁免配套 + 1 测试 | Approved |
+| 本次 | C4 DoD 核查、Task 3 审查 I-1 收窄、守卫回归测试补 2、backlog 校正、本节 | — |
+
+**DoD 实测**：`python scripts/check.py` 四步全绿（206 passed，
+ruff / mypy 干净）；BASELINE == `set()`；`git grep
+"lint-imports: allow-private" -- sessionpack/` 为 0 处；
+`git grep "cli.output" -- sessionpack/` 仅 `cli/read_cmds.py:18` 与
+`cli/write_cmds.py:24` 两处（均在 cli/ 包内）。测试数
+196 → 199（C1）→ 203（C2）→ 204（C3）→ 206（C4 补守卫回归）。
+
+**计划外但必要的实现改动**：`scripts/lint_imports.py` 的 E_PRIVATE
+from-import 同包豁免新增 `or owner.rpartition(".")[0] == pkg`
+（commit `48c4c46`）——拆包后包内绝对导入（`from
+sessionpack.importer.state import _FileState`）的 owner 是完整模块路径，
+原条件只比模块键会误报。Task 3 审查 I-1 指出该条件对顶层扁平模块过宽
+（`pkg` 恒为 `sessionpack`），已在 C4 收窄为附加 `and pkg !=
+"sessionpack"`，并补 `test_flat_module_private_import_still_checked_after_I1`
+与 `test_package_intra_module_absolute_private_import_exempt` 两条守卫
+回归测试锁定两侧行为。§4 措辞随之精确化。
+
+**§5 backlog 校正**：backlog 中「server.py 未登记 LAYER_OF」条目与实际
+清单文件不符——`LAYER_OF` 已含 `"server": 4` 与 `"__main__": 4`，
+该盲区不存在，按 §5 结论在本文档记录校正，不回改已归档 spec。
+
+**已知遗留（移交 Final Review 裁决，未在本轮修）**：
+
+- P1（C1 审查，Important，计划强制）：E_DOM_IMPORT 可被
+  `from sessionpack.cli import output` 门面写法绕过，现状仓内 0 处。
+- P2（C2 审查，Important，计划强制）：`_rebound_names` 为文件级判定，
+  单个同名函数参数即可令该文件该模块的私有检查整体失效；另有 marker
+  裸行扫描可被字符串字面量误触（评审判 Minor）。
+- C1/C2/C3 审查累计 10+1 条 Minor 的 deferred 清单见
+  `.superpowers/sdd/2026-11-07-边界盲区机械化与importer拆包/progress.md`
+  与各 `task-N-review.md`。
