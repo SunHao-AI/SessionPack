@@ -16,7 +16,13 @@ from sessionpack.cli.common import (
     EXIT_VERIFY,
 )
 from sessionpack.cli.parser import build_parser
-from sessionpack.cli.read_cmds import cmd_doctor, cmd_scan, cmd_serve, cmd_verify
+from sessionpack.cli.read_cmds import (
+    cmd_doctor,
+    cmd_scan,
+    cmd_search,
+    cmd_serve,
+    cmd_verify,
+)
 from sessionpack.cli.write_cmds import (
     cmd_export,
     cmd_import,
@@ -33,6 +39,7 @@ _cmd_export = cmd_export
 _cmd_verify = cmd_verify
 _cmd_push = cmd_push
 _cmd_pull = cmd_pull
+_cmd_search = cmd_search
 _cmd_rebuild = cmd_rebuild
 
 __all__ = [

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from sessionpack import __version__, archive, diagnostics
+from sessionpack import __version__, archive, catalog, diagnostics
 from sessionpack.adapters import get_adapter
 from sessionpack.cli.common import (
     EXIT_OK,
@@ -110,6 +110,45 @@ def run_verify(args) -> CommandResult:
 
 def cmd_verify(args) -> int:
     return emit(run_verify(args), args.json)
+
+
+def _snippet(body: str, width: int) -> str:
+    """展示用摘要：首行压缩空白后截 width 字符（数据层不丢信息，只截展示）。"""
+    first = (body or "").strip().splitlines()
+    compact = " ".join((first[0] if first else "").split())
+    return compact if len(compact) <= width else compact[:width] + "…"
+
+
+def run_search(args) -> CommandResult:
+    lay = layout(args)
+    if not require_catalog(lay.catalog):
+        return CommandResult(EXIT_USAGE, err_lines=[
+            "索引不存在，请先运行 sessionpack import"])
+    term = args.term.strip()
+    if not term:
+        return CommandResult(EXIT_USAGE, err_lines=["检索词不能为空"])
+    limit = max(1, min(args.limit, 500))
+    conn = catalog.connect(lay.catalog)
+    try:
+        rows = catalog.search_messages(conn, term, limit=limit)
+    finally:
+        conn.close()
+    if args.json:
+        return CommandResult(EXIT_OK, data={
+            "term": term, "limit": limit, "count": len(rows),
+            "hits": [{"session_id": r["session_id"],
+                      "message_id": r["message_id"], "body": r["body"]}
+                     for r in rows]})
+    if not rows:
+        return CommandResult(EXIT_OK, out_lines=[f'未命中任何消息（检索词"{term}"）'])
+    lines = [f"命中 {len(rows)} 条（检索词\"{term}\"）"]
+    lines += [f'{r["session_id"]} #{r["message_id"]}  {_snippet(r["body"] or "", 80)}'
+              for r in rows]
+    return CommandResult(EXIT_OK, out_lines=lines)
+
+
+def cmd_search(args) -> int:
+    return emit(run_search(args), args.json)
 
 
 def cmd_serve(args) -> int:

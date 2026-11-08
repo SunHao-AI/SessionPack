@@ -125,6 +125,23 @@ def create_server(
                         "projects": catalog.get_projects(conn),
                     })
                     return
+                if path == "/api/search":
+                    term = (query.get("q") or [""])[0].strip()
+                    if not term:
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": "缺少 q"})
+                        return
+                    try:
+                        limit = int((query.get("limit") or ["50"])[0])
+                    except ValueError:
+                        limit = 50
+                    limit = max(1, min(limit, 500))  # 与 cli run_search 同规则
+                    rows = catalog.search_messages(conn, term, limit=limit)
+                    self._json(HTTPStatus.OK, {
+                        "query": term, "count": len(rows),
+                        "hits": [{"session_id": r["session_id"],
+                                  "message_id": r["message_id"],
+                                  "body": r["body"]} for r in rows]})
+                    return
                 if path.startswith("/api/sessions/") and path.endswith("/export"):
                     session_id = path.rsplit("/", 2)[-2]
                     if not catalog.SESSION_ID_RE.fullmatch(session_id):

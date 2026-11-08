@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--data-dir", default=None)
     pull.add_argument("--json", action="store_true")
 
+    srch = sub.add_parser("search",
+                          help="全文检索消息正文（≥3 字走 FTS，其余 LIKE）")
+    srch.add_argument("term", help="检索词")
+    srch.add_argument("--limit", type=int, default=50)
+    srch.add_argument("--data-dir", default=None)
+    srch.add_argument("--json", action="store_true")
+
     rebuild = sub.add_parser("rebuild", help="重建索引（FTS 或从归档包全量重建）")
     mode = rebuild.add_mutually_exclusive_group()
     mode.add_argument("--fts", action="store_true",

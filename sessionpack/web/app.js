@@ -42,32 +42,75 @@
       const data = await api("/api/sessions?" + params.toString());
       return data;
     }
+    const hitsBox = document.getElementById("hits");
+    const hitList = document.getElementById("hit_list");
+    function snippet(body, width) {
+      const first = (body || "").trim().split("\n")[0] || "";
+      const compact = first.split(/\s+/).filter(Boolean).join(" ");
+      return compact.length > width ? compact.slice(0, width) + "…" : compact;
+    }
+    function renderHits(hits) {
+      hitList.replaceChildren();
+      if (!hits || hits.length === 0) {
+        hitsBox.hidden = true;
+        return;
+      }
+      hits.forEach(function (hit) {
+        const item = document.createElement("li");
+        const anchor = document.createElement("a");
+        anchor.href = link("/session?id=" + encodeURIComponent(hit.session_id));
+        anchor.textContent = hit.session_id;
+        const mid = document.createElement("span");
+        mid.textContent = " #" + hit.message_id;
+        const body = document.createElement("p");
+        body.textContent = snippet(hit.body, 120);
+        item.appendChild(anchor);
+        item.appendChild(mid);
+        item.appendChild(body);
+        hitList.appendChild(item);
+      });
+      hitsBox.hidden = false;
+    }
+    async function loadHits() {
+      const q = document.getElementById("q").value.trim();
+      if (!q) return null;
+      const search = await api("/api/search?" +
+        new URLSearchParams({ q: q, limit: "50" }).toString());
+      return search.hits;
+    }
     document.getElementById("search").addEventListener("submit", async function (event) {
       event.preventDefault();
       try {
         const data = await load();
-        renderSessions(data.sessions, list, status);
+        const hits = await loadHits();
+        renderHits(hits);
+        renderSessions(data.sessions, list, status, hits);
       } catch (error) {
         status.textContent = error.message;
       }
     });
     try {
+      const initialQ = params.get("q");
+      if (initialQ) document.getElementById("q").value = initialQ;
       const data = await load();
+      const hits = await loadHits();
       data.projects.forEach(function (project) {
         const option = document.createElement("option");
         option.value = project.project_id;
         option.textContent = project.display_name + "（" + project.session_count + "）";
         select.appendChild(option);
       });
-      renderSessions(data.sessions, list, status);
+      renderHits(hits);
+      renderSessions(data.sessions, list, status, hits);
     } catch (error) {
       status.textContent = error.message;
     }
   }
 
-  function renderSessions(sessions, list, status) {
+  function renderSessions(sessions, list, status, hits) {
     list.replaceChildren();
-    status.textContent = "共 " + sessions.length + " 个会话";
+    status.textContent = "共 " + sessions.length + " 个会话" +
+      (hits ? " · 命中 " + hits.length + " 条消息" : "");
     sessions.forEach(function (session) {
       const item = document.createElement("li");
       const anchor = document.createElement("a");
@@ -143,6 +186,13 @@
       "click", () => exportLink("markdown"));
     document.getElementById("export_json").addEventListener(
       "click", () => exportLink("json"));
+    const msgForm = document.getElementById("msg_search");
+    if (msgForm) msgForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const term = document.getElementById("sq").value.trim();
+      if (!term) return;
+      window.location.href = link("/?q=" + encodeURIComponent(term));
+    });
   }
 
   async function initDiagnostics() {
