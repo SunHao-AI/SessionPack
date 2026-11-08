@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from sessionpack.catalog.write import (
     upsert_message,
     upsert_topic,
 )
+from sessionpack.cli.write_cmds import run_delete
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 from sessionpack.paths import ensure_layout
 from sessionpack.sync import find_archives_with_session
@@ -256,3 +258,63 @@ def test_find_archives_with_session_scan(tmp_path):
     assert find_archives_with_session(dest, SID2) == [src.name]
     assert find_archives_with_session(dest, "f" * 24) == []
     assert find_archives_with_session(tmp_path / "none", SID) == []
+
+
+def _purge_cli(root, session_id, *, yes=True, json_out=False, directory=None):
+    args = SimpleNamespace(session=session_id, undo=False, purge=True,
+                           yes=yes, json=json_out, data_dir=str(root),
+                           dir=directory)
+    return run_delete(args)
+
+
+def _purge_seeded(tmp_path, name="root"):
+    """建库播种 → CLI delete → 出包到 lay.archives，返回 (root, lay)。"""
+    root, conn = _purge_setup(tmp_path, name)
+    lay = ensure_layout(root)
+    archive.build_archive(conn, lay.archives, "p1")
+    conn.close()
+    return root, lay
+
+
+def test_cli_purge_gates(tmp_path):
+    root, lay = _purge_seeded(tmp_path)
+    conn = catalog.connect(lay.catalog)
+    # --purge 缺 --yes → 用法错误，数据未动
+    assert _purge_cli(root, SID, yes=False).exit_code == 2
+    assert catalog.get_session_status(conn, SID) == "deleted"
+    # --undo 与 --purge 互斥
+    args = SimpleNamespace(session=SID, undo=True, purge=True, yes=True,
+                           json=False, data_dir=str(root), dir=None)
+    assert run_delete(args).exit_code == 2
+    conn.close()
+    # active 态直接 purge → 用法错误（G2 门槛）
+    root2, conn2 = _open(tmp_path, "b")
+    _seed(conn2, SID2)
+    conn2.close()
+    res = _purge_cli(root2, SID2)
+    assert res.exit_code == 2 and "先" in res.err_lines[0]
+
+
+def test_cli_purge_erases_and_repacks(tmp_path):
+    root, lay = _purge_seeded(tmp_path)
+    old_name = lay.archives.glob("*.zip").__next__().name
+    res = _purge_cli(root, SID, json_out=True)
+    assert res.exit_code == 0
+    assert res.data == {"session_id": SID, "purged": True,
+                        "messages_removed": 1, "archives_repacked": 1,
+                        "archives_failed": [], "sync_stale": []}
+    zips = list(lay.archives.glob("*.zip"))
+    assert len(zips) == 1 and zips[0].name != old_name   # 旧包已删、新包在场
+    assert archive.verify_archive(zips[0]).ok
+    conn = catalog.connect(lay.catalog)
+    assert catalog.get_session_status(conn, SID) == "purged"
+    assert catalog.get_messages(conn, SID) == []
+    conn.close()
+
+
+def test_cli_purge_idempotent(tmp_path):
+    root, lay = _purge_seeded(tmp_path)
+    assert _purge_cli(root, SID).exit_code == 0
+    res = _purge_cli(root, SID, json_out=True)          # 已是 purged：幂等成功
+    assert res.exit_code == 0
+    assert res.data["purged"] is True and res.data["archives_repacked"] == 0

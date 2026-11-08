@@ -87,10 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--json", action="store_true")
 
     dele = sub.add_parser(
-        "delete", help="软删除会话（墓碑，随归档包传播不复活；--undo 仅撤销本机）")
+        "delete",
+        help="软删除会话（墓碑，随归档包传播不复活；--undo 仅撤销本机；"
+             "--purge --yes 物理清除本机内容，不可逆）")
     dele.add_argument("--session", required=True, help="会话 ID")
     dele.add_argument("--undo", action="store_true",
                       help="撤销本机删除（不跨设备传播）")
+    dele.add_argument("--purge", action="store_true",
+                      help="物理清除本机内容（需 --yes；不可逆）")
+    dele.add_argument("--yes", action="store_true", help="确认不可逆操作")
     dele.add_argument("--data-dir", default=None)
     dele.add_argument("--json", action="store_true")
     return parser

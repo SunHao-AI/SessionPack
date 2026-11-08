@@ -271,6 +271,56 @@ def cmd_rebuild(args) -> int:
     return emit(run_rebuild(args), args.json)
 
 
+def _run_purge(conn, lay, args, status: str) -> CommandResult:
+    """delete --purge --yes 的编排（Spec 13 D4）：先库后包、单包失败不回滚。
+
+    调用方 run_delete 已完成索引存在性、会话存在性（status 非 None）与连接管理。
+    """
+    if getattr(args, "undo", False):
+        return CommandResult(EXIT_USAGE,
+                             err_lines=["--purge 与 --undo 不能同时使用"])
+    if not getattr(args, "yes", False):
+        return CommandResult(EXIT_USAGE, err_lines=[
+            "--purge 会物理抹除本机内容且不可逆，请加 --yes 确认"])
+    if status == "active":
+        return CommandResult(EXIT_USAGE, err_lines=[
+            f"需先软删除再清除: sessionpack delete --session {args.session}"])
+    # status 为 deleted 或 purged（G2：只从 deleted 进；purged 走幂等成功）
+    messages_removed = (len(catalog.get_messages(conn, args.session))
+                        if status == "deleted" else 0)
+    if status == "deleted":
+        catalog.purge_session(
+            conn, args.session,
+            now=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        conn.commit()
+    repacked: list[str] = []
+    failed: list[str] = []
+    for name in sync.find_archives_with_session(lay.archives, args.session):
+        try:
+            new = archive.repak_excluding_session(
+                lay.archives / name, args.session, lay.archives)
+        except (archive.ArchiveError, archive.RepakError, OSError) as exc:
+            failed.append(f"{name}: {exc}")
+            continue
+        (lay.archives / name).unlink()
+        repacked.append(new.name)
+    sync_dir = resolve_sync_dir(args, lay)
+    sync_stale = (sync.find_archives_with_session(sync_dir, args.session)
+                  if sync_dir else [])
+    data = {"session_id": args.session, "purged": True,
+            "messages_removed": messages_removed,
+            "archives_repacked": len(repacked),
+            "archives_failed": failed, "sync_stale": sync_stale}
+    lines = [f"已清除会话 {args.session}：抹除消息 {messages_removed} 条，"
+             f"重打包 {len(repacked)} 个"]
+    lines += [f"重打包失败（旧包原样在场）: {item}" for item in failed]
+    lines += [f"同步目录仍含旧包（本命令不改动，请手动处理）: {item}"
+              for item in sync_stale]
+    if failed:
+        return CommandResult(EXIT_ERROR, out_lines=lines, data=data)
+    return CommandResult(EXIT_OK, out_lines=lines, data=data)
+
+
 def run_delete(args) -> CommandResult:
     lay = layout(args)
     if not require_catalog(lay.catalog):
@@ -284,6 +334,8 @@ def run_delete(args) -> CommandResult:
         if status is None:
             return CommandResult(EXIT_USAGE,
                                  err_lines=[f"会话不存在: {args.session}"])
+        if getattr(args, "purge", False):
+            return _run_purge(conn, lay, args, status)
         if args.undo:
             if status != "deleted":
                 return CommandResult(
