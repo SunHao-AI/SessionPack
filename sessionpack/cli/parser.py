@@ -96,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     dele.add_argument("--purge", action="store_true",
                       help="物理清除本机内容（需 --yes；不可逆）")
     dele.add_argument("--yes", action="store_true", help="确认不可逆操作")
+    dele.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
     dele.add_argument("--data-dir", default=None)
     dele.add_argument("--json", action="store_true")
     return parser

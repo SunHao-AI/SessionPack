@@ -19,6 +19,7 @@ from sessionpack.catalog.write import (
     upsert_message,
     upsert_topic,
 )
+from sessionpack.cli import build_parser, main
 from sessionpack.cli.write_cmds import run_delete
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 from sessionpack.paths import ensure_layout
@@ -318,3 +319,21 @@ def test_cli_purge_idempotent(tmp_path):
     res = _purge_cli(root, SID, json_out=True)          # 已是 purged：幂等成功
     assert res.exit_code == 0
     assert res.data["purged"] is True and res.data["archives_repacked"] == 0
+
+
+def test_cli_purge_end_to_end_via_parser(tmp_path, capsys):
+    """真实 CLI 路径：build_parser 必须给出 args.dir，main 走通 purge 全链。"""
+    root, lay = _purge_seeded(tmp_path)
+    args = build_parser().parse_args(
+        ["delete", "--session", SID, "--purge", "--yes"])
+    assert args.dir is None                             # delete 也带 --dir（审查修复）
+    code = main(["delete", "--session", SID, "--purge", "--yes",
+                 "--data-dir", str(root), "--json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"session_id": SID, "purged": True,
+                       "messages_removed": 1, "archives_repacked": 1,
+                       "archives_failed": [], "sync_stale": []}
+    conn = catalog.connect(lay.catalog)
+    assert catalog.get_session_status(conn, SID) == "purged"
+    conn.close()

@@ -299,10 +299,15 @@ def _run_purge(conn, lay, args, status: str) -> CommandResult:
         try:
             new = archive.repak_excluding_session(
                 lay.archives / name, args.session, lay.archives)
+            try:
+                # Windows 下旧包可能被占用，删除失败只记入 failed，不中断其余包
+                (lay.archives / name).unlink()
+            except OSError as exc:
+                failed.append(f"{name}: 旧包删除失败: {exc}")
+                continue
         except (archive.ArchiveError, archive.RepakError, OSError) as exc:
             failed.append(f"{name}: {exc}")
             continue
-        (lay.archives / name).unlink()
         repacked.append(new.name)
     sync_dir = resolve_sync_dir(args, lay)
     sync_stale = (sync.find_archives_with_session(sync_dir, args.session)
