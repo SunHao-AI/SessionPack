@@ -6,7 +6,13 @@ _seed/_open/_status 与 tests/test_delete_tombstone.py 同构（不跨测试文�
 """
 from __future__ import annotations
 
+import json
+import zipfile
+
+import pytest
+
 from sessionpack import archive, catalog
+from sessionpack.archive.repak import RepakError, repak_excluding_session
 from sessionpack.catalog.write import (
     purge_session,
     upsert_message,
@@ -16,6 +22,7 @@ from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 from sessionpack.paths import ensure_layout
 
 SID = "0123456789abcdef01234567"
+SID2 = "76543210fedcba9876543210"
 BODY = "需要彻底抹除的敏感内容"
 
 
@@ -184,3 +191,55 @@ def test_fresh_device_import_purged_package(tmp_path):
     assert catalog.get_messages(fresh, SID) == []
     fresh.close()
     a.close()
+
+
+def _two_session_package(tmp_path):
+    """一个包两个会话：SID（将被剔除）与 SID2（保留），SID 已 delete。"""
+    _, conn = _open(tmp_path, "a")
+    _seed(conn, SID)
+    _seed(conn, SID2, body="保留的正文")
+    catalog.mark_session_deleted(conn, SID, now="2026-11-08T11:00:00")
+    conn.commit()
+    item = archive.build_archive(conn, tmp_path / "out", "p1")
+    conn.close()
+    return item.path
+
+
+def test_repak_replaces_session_with_purge_card(tmp_path):
+    src = _two_session_package(tmp_path)
+    new = repak_excluding_session(src, SID, tmp_path / "out")
+    check = archive.verify_archive(new)
+    assert check.ok
+    with zipfile.ZipFile(new) as zf:
+        card = json.loads(zf.read(f"sessions/{SID}/meta.json"))
+        assert card["status"] == "purged"
+        assert set(card) == {"session_id", "project_id", "source_kind",
+                             "status", "created_at", "updated_at"}
+        # 空 ndjson 裁决：条目保留、内容为 0 字节（配对不变量不允许删条目）
+        assert zf.read(f"sessions/{SID}/messages.ndjson") == b""
+        kept = json.loads(zf.read(f"sessions/{SID2}/meta.json"))
+        assert kept["status"] == "active"
+        body = zf.read(f"sessions/{SID2}/messages.ndjson").decode("utf-8")
+        assert "保留的正文" in body
+        manifest = json.loads(zf.read("manifest.json"))
+    # 该会话正文抹除后：会话数不变（卡片保留）、消息数减 1
+    assert manifest["counts"] == {"sessions": 2, "messages": 1}
+    assert new.name != src.name          # archive_id 变 → 本机改名（ADR-007 豁免）
+    assert src.exists()                  # 旧包删除由调用方负责
+
+
+def test_repak_rejects_missing_session(tmp_path):
+    src = _two_session_package(tmp_path)
+    with pytest.raises(RepakError):
+        repak_excluding_session(src, "f" * 24, tmp_path / "out")
+
+
+def test_repak_rejects_invalid_package(tmp_path):
+    src = _two_session_package(tmp_path)
+    broken = tmp_path / "broken.zip"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(broken, "w") as zout:
+        for info in zin.infolist():
+            zout.writestr(info, zin.read(info.filename))
+        zout.writestr("extra.txt", "x")  # manifest 外多余条目 → E_UNREGISTERED_FILE
+    with pytest.raises(archive.ArchiveError):
+        repak_excluding_session(broken, SID, tmp_path / "out")

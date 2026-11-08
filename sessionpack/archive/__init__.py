@@ -8,6 +8,10 @@ from sessionpack.archive.build import (
     compute_archive_id,
 )
 from sessionpack.archive.install import ArchiveImportResult, import_archive
+from sessionpack.archive.repak import (  # noqa: F401
+    RepakError,
+    repak_excluding_session,
+)
 from sessionpack.archive.verify import (
     ArchiveError,
     VerifyIssue,
