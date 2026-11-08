@@ -61,8 +61,12 @@ def upsert_project(conn: sqlite3.Connection, project: ProjectRecord) -> None:
 
 def upsert_topic(conn: sqlite3.Connection, rec: TopicRecord) -> WriteResult:
     existing = conn.execute(
-        "SELECT updated_at FROM sessions WHERE session_id=?", (rec.session_id,)
+        "SELECT updated_at, status FROM sessions WHERE session_id=?",
+        (rec.session_id,),
     ).fetchone()
+    if existing is not None and existing["status"] == "purged":
+        # 守卫①：purged 终态不可复活（import/rebuild 旧数据也走这条路）
+        return WriteResult(False, False)
     created = existing is None
     title = rec.body[:60] or None
     if created:
@@ -83,6 +87,11 @@ def upsert_topic(conn: sqlite3.Connection, rec: TopicRecord) -> WriteResult:
 
 
 def upsert_message(conn: sqlite3.Connection, rec: MessageRecord) -> WriteResult:
+    guarded = conn.execute(
+        "SELECT status FROM sessions WHERE session_id=?", (rec.session_id,)
+    ).fetchone()
+    if guarded is not None and guarded["status"] == "purged":
+        return WriteResult(False, False)
     cursor = conn.execute(
         "INSERT OR IGNORE INTO messages(session_id, message_id, seq, ts, intent,"
         " outcome, actions, learned, meta_json, body) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -124,10 +133,57 @@ def mark_session_deleted(conn: sqlite3.Connection, session_id: str, *,
     会话不存在返回 False；重复标记幂等返回 True。
     """
     cur = conn.execute(
-        "UPDATE sessions SET status='deleted', updated_at=? WHERE session_id=?",
+        "UPDATE sessions SET status='deleted', updated_at=? "
+        "WHERE session_id=? AND status != 'purged'",
         (now, session_id),
     )
     return cur.rowcount > 0
+
+
+def purge_session(conn, session_id: str, *, now: str) -> bool:
+    """物理清除：sessions 行置 purged 终态并清空内容字段，抹掉消息与 FTS。
+
+    仅 deleted 态可进（G2）：True=本次真清除；purged 幂等、active 拒绝均返 False。
+    sessions 行保留，作为 purge 卡载体与 install 判家依据。
+    与 Spec D2 语句顺序对调：先 UPDATE 判态再抹数据——active 误调时必须
+    原样拒掉，不能先把消息删了再发现状态不对。
+    """
+    cur = conn.execute(
+        "UPDATE sessions SET status='purged', title=NULL, summary=NULL, "
+        "content_hash=NULL, updated_at=? "
+        "WHERE session_id=? AND status='deleted'",
+        (now, session_id),
+    )
+    if cur.rowcount == 0:
+        return False
+    conn.execute("DELETE FROM message_fts WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+    return True
+
+
+def insert_session_purge_marker(conn, *, session_id: str, project_id: str,
+                                source_kind: str, created_at: str,
+                                updated_at: str) -> None:
+    """归档 purge 卡的强制落卡语义（三道卡②的执行端，与墓碑分支对称）。
+
+    行存在 → 抹消息与 FTS、置 purged、清内容字段（覆盖 active/deleted/purged
+    三态）；行不存在（新设备）→ 直接 INSERT 终态卡。
+    """
+    conn.execute("DELETE FROM message_fts WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+    cur = conn.execute(
+        "UPDATE sessions SET status='purged', title=NULL, summary=NULL, "
+        "content_hash=NULL, updated_at=? WHERE session_id=?",
+        (updated_at, session_id),
+    )
+    if cur.rowcount == 0:
+        conn.execute(
+            "INSERT INTO sessions(session_id, project_id, source_kind, title, "
+            "summary, created_at, updated_at, status) "
+            "VALUES(?,?,?,?,?,?,?,'purged')",
+            (session_id, project_id, source_kind, None, None,
+             created_at, updated_at),
+        )
 
 
 def insert_session_tombstone(conn: sqlite3.Connection, *, session_id: str,

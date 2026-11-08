@@ -33,8 +33,10 @@ from sessionpack.catalog.write import (
     begin_import_run,
     clear_import_file_error,
     finish_import_run,
+    insert_session_purge_marker,  # noqa: F401
     insert_session_tombstone,  # noqa: F401
     mark_session_deleted,  # noqa: F401
+    purge_session,  # noqa: F401
     refresh_session_hashes,
     register_import_files,
     reset_import_file,
