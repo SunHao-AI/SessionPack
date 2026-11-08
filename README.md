@@ -21,11 +21,21 @@ Trae 会话归档与同步：本地只读会话管理（数据不出本机）。
 索引库是纯派生缓存，一切不一致问题用 `rebuild` 解决；`--from-archives`
 以 `archives/*.zip` 为唯一数据源，会丢弃未归档的会话，故需 `--yes` 确认。
 
+### 消息检索
+
+    sessionpack search 关键词            # 消息级检索：≥3 字走全文索引，其余 LIKE
+    sessionpack search 关键词 --json     # 结构化输出（session_id / message_id / body）
+
 ## 开发环境
 
     python -m venv .venv
     .venv\Scripts\python.exe -m pip install -e ".[dev]"
     python scripts/check.py
 
-`check.py` 依次运行 ruff、mypy、pytest，任一失败即退出。可加
-`--only ruff|mypy|pytest` 单跑一步。
+`check.py` 依次运行 lint_docs、lint_imports、ruff、mypy、pytest 五步，
+任一失败即退出。可加 `--only lint_docs|lint_imports|ruff|mypy|pytest`
+单跑一步。
+
+发布前冒烟（真构建 wheel 并校验内容，约 20 秒，日常跳过）：
+
+    $env:SP_BUILD_WHEEL = "1"; python scripts/check.py --only pytest

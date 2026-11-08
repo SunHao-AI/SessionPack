@@ -4,12 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sessionpack"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Trae 会话归档与同步：本地只读会话管理"
 requires-python = ">=3.11"
 dependencies = []
 license = "MIT"
 license-files = ["LICENSE"]
+
+# 版本单一来源：升版只改 sessionpack/__init__.py 的 __version__
+# （setuptools 走 AST 静态读字面量，不 import 包；tests/test_version_guard.py 锁死此约定）
+[tool.setuptools.dynamic]
+version = {attr = "sessionpack.__version__"}
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.8"]
