@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -80,6 +81,14 @@ def _replace_with_retry(src: Path, dst: Path) -> None:
             time.sleep(_REPLACE_BACKOFF_S)
 
 
+def _discard_quietly(path: Path) -> None:
+    """失败路径的尽力清理：被并发重建者持有时留待下一轮入场清理。"""
+    try:
+        _cleanup(path)
+    except OSError:
+        pass
+
+
 def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
     """从 layout.archives/*.zip 在 staging 上全量重建，成功后原子换入。
 
@@ -102,16 +111,28 @@ def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
                 ok=False,
                 error=f"归档 {bundle.name} 校验失败（{codes}），已中止，原索引未改动")
 
-    staging = layout.catalog.with_name(layout.catalog.name + ".staging")
-    _cleanup(staging)
-    if layout.catalog.exists():
-        # 原库只读打开确认文件合法后即关闭；此处绝不开写连接
-        ro = catalog.connect_readonly(layout.catalog)
-        try:
-            ro.execute("SELECT COUNT(*) FROM sqlite_master")
-        finally:
-            ro.close()
-        shutil.copyfile(layout.catalog, staging)  # WAL/SHM 不拷
+    # staging 名带写者标识（spec9）：并发重建各自建各自的，互不打开、
+    # 互不 unlink 对方的 staging；换入步由重试+回滚收敛先后。
+    # 保留 .staging 前缀段，既有"无 catalog.sqlite.staging* 残留"断言仍适用。
+    staging = layout.catalog.with_name(
+        layout.catalog.name
+        + f".staging.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        _cleanup(staging)
+        if layout.catalog.exists():
+            # 原库只读打开确认文件合法后即关闭；此处绝不开写连接
+            ro = catalog.connect_readonly(layout.catalog)
+            try:
+                ro.execute("SELECT COUNT(*) FROM sqlite_master")
+            finally:
+                ro.close()
+            shutil.copyfile(layout.catalog, staging)  # WAL/SHM 不拷
+    except OSError:
+        # 原库正被他进程持有到连复制都失败：收敛为干净失败而非崩栈。
+        _discard_quietly(staging)
+        return RebuildReport(
+            ok=False,
+            error="staging 准备失败（疑似并发重建互踩），原索引未改动")
     conn = catalog.connect(staging)
     try:
         try:
