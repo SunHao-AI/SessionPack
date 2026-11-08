@@ -224,8 +224,11 @@ def refresh_session_hashes(conn: sqlite3.Connection, session_ids: set[str]) -> N
             )
         ]
         digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
+        # 仅回写 active 行：purged/deleted 卡行 content_hash 契约=保持 NULL，
+        # 防 importer 无条件 touched 或旧包回灌把卡行哈希洗成空集摘要。
         conn.execute(
-            "UPDATE sessions SET content_hash=? WHERE session_id=?",
+            "UPDATE sessions SET content_hash=? WHERE session_id=?"
+            " AND status='active'",
             (digest, session_id),
         )
 

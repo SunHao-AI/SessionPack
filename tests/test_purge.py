@@ -16,6 +16,7 @@ from sessionpack import archive, catalog
 from sessionpack.archive.repak import RepakError, repak_excluding_session
 from sessionpack.catalog.write import (
     purge_session,
+    refresh_session_hashes,
     upsert_message,
     upsert_topic,
 )
@@ -367,3 +368,44 @@ def test_cli_purge_reports_stale_sync_dir(tmp_path):
     assert res.data["archives_repacked"] == 1
     # 同步目录内容原样未动
     assert sorted(p.name for p in stale.glob("*.zip")) == names
+
+
+# ---------------------------------------------------------------------------
+# F1 回归：refresh_session_hashes 仅回写 active 行，purged 行保持 NULL
+# ---------------------------------------------------------------------------
+
+def test_refresh_session_hashes_preserves_purged_content_hash_null(tmp_path):
+    """purged 行直接调 refresh_session_hashes 后 content_hash 仍为 None。"""
+    _, conn = _purge_setup(tmp_path)
+    assert purge_session(conn, SID, now="2026-11-08T12:00:00") is True
+    conn.commit()
+    # 直接调用：touched 含有 purged 会话（模拟 importer 无条件 touched）
+    refresh_session_hashes(conn, {SID})
+    conn.commit()
+    row = conn.execute(
+        "SELECT content_hash FROM sessions WHERE session_id=?", (SID,)
+    ).fetchone()
+    assert row["content_hash"] is None
+    conn.close()
+
+
+def test_old_package_install_preserves_purged_status_and_hash(tmp_path):
+    """purge 后用旧包（meta 无 purged 标记）回灌：status 仍 purged、hash 仍 None。"""
+    _, a = _purge_setup(tmp_path, "a")
+    # 在 purge 前导出"旧包"（含正文，meta 无 status=purged）
+    old = archive.build_archive(a, tmp_path / "out-old", "p1")
+    assert catalog.purge_session(a, SID, now="2026-11-08T12:00:00")
+    a.commit()
+    # 用 purge 卡包把 b 初始化为 purged 态
+    card = archive.build_archive(a, tmp_path / "out-card", "p1")
+    _, b = _open(tmp_path, "b")
+    archive.import_archive(b, card.path)
+    assert catalog.get_session_status(b, SID) == "purged"
+    # 旧包回灌：守卫①拦截 upsert；touched 含 SID → refresh 不得写 purged 行
+    archive.import_archive(b, old.path)
+    assert catalog.get_session_status(b, SID) == "purged"
+    assert b.execute(
+        "SELECT content_hash FROM sessions WHERE session_id=?", (SID,)
+    ).fetchone()[0] is None
+    b.close()
+    a.close()
