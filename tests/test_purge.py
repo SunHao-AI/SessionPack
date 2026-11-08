@@ -370,6 +370,34 @@ def test_cli_purge_reports_stale_sync_dir(tmp_path):
     assert sorted(p.name for p in stale.glob("*.zip")) == names
 
 
+def test_repak_rejects_manifest_without_project_section(tmp_path):
+    """手造缺 project 节的包（files 未动故仍能过 verify）→ RepakError 而非 KeyError。"""
+    src = _two_session_package(tmp_path)
+    hollow = tmp_path / "hollow.zip"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(hollow, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "manifest.json":
+                payload = json.dumps(
+                    {k: v for k, v in json.loads(payload).items()
+                     if k != "project"}).encode("utf-8")
+            zout.writestr(info, payload)
+    with pytest.raises(RepakError):
+        repak_excluding_session(hollow, SID, tmp_path / "out")
+
+
+def test_find_archives_with_session_skips_non_dict_meta(tmp_path):
+    """同步目录里 meta.json 根非 dict 的包：跳过、不抛异常、不阻塞扫描。"""
+    src = _two_session_package(tmp_path)
+    dest = tmp_path / "sync"
+    dest.mkdir()
+    (dest / src.name).write_bytes(src.read_bytes())
+    junk = dest / "junk.zip"
+    with zipfile.ZipFile(junk, "w") as zout:
+        zout.writestr(f"sessions/{SID}/meta.json", json.dumps([SID]).encode())
+    assert find_archives_with_session(dest, SID) == [src.name]
+
+
 # ---------------------------------------------------------------------------
 # F1 回归：refresh_session_hashes 仅回写 active 行，purged 行保持 NULL
 # ---------------------------------------------------------------------------

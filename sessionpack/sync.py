@@ -63,7 +63,8 @@ def find_archives_with_session(directory: Path, session_id: str) -> list[str]:
                 if json.loads(zf.read(card)).get("status") == "purged":
                     continue
                 hits.append(path.name)
-        except (OSError, zipfile.BadZipFile, KeyError, ValueError):
+        except (OSError, zipfile.BadZipFile, KeyError, ValueError,
+                AttributeError):
             continue
     return hits
 

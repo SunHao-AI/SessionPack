@@ -24,9 +24,12 @@ class RepakError(Exception):
 
 def _purged_card(old_meta: dict, session_id: str) -> dict:
     """purged 精简卡：只留身份与时间字段，不含 title/summary 等内容字段。"""
+    project_id = old_meta.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise RepakError(f"会话 {session_id} 的 meta 缺少 project_id，无法出卡")
     return {
         "session_id": session_id,
-        "project_id": old_meta["project_id"],
+        "project_id": project_id,
         "source_kind": old_meta.get("source_kind") or "session",
         "status": "purged",
         "created_at": old_meta.get("created_at") or "",
@@ -47,6 +50,13 @@ def repak_excluding_session(src: Path, session_id: str, dest_dir: Path) -> Path:
         manifest = json.loads(zf.read(MANIFEST_NAME))
         if card_name not in zf.namelist():
             raise RepakError(f"包内无会话 {session_id}")
+        # 手造畸形包可能缺 project 节：提前取值出 RepakError，不让 KeyError
+        # 穿透到调用方（write_cmds 的捕获元组里没有 KeyError，会中断整个 repak 循环）
+        project_meta = manifest.get("project")
+        project_id = (project_meta.get("project_id")
+                      if isinstance(project_meta, dict) else None)
+        if not isinstance(project_id, str) or not project_id:
+            raise RepakError("包 manifest 缺少 project.project_id，无法命名新包")
         card = _purged_card(json.loads(zf.read(card_name)), session_id)
         card_bytes = (json.dumps(card, ensure_ascii=False, indent=2)
                       + "\n").encode("utf-8")
@@ -82,8 +92,9 @@ def repak_excluding_session(src: Path, session_id: str, dest_dir: Path) -> Path:
         temp.unlink(missing_ok=True)
         raise ArchiveError(recheck.issues)
     # 日期段沿用原包 created_at：本机改名只由 archive_id 段体现
+    # project_id 已在函数开头校验取值，此处直接复用
     date_seg = (manifest.get("created_at") or "")[:10]
-    final = dest_dir / (f"{_slug(manifest['project']['project_id'])}"
+    final = dest_dir / (f"{_slug(project_id)}"
                         f"-{date_seg}-{archive_id[:12]}.zip")
     os.replace(temp, final)
     return final
