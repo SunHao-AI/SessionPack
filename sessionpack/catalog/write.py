@@ -117,6 +117,46 @@ def upsert_message(conn: sqlite3.Connection, rec: MessageRecord) -> WriteResult:
     return WriteResult(True, created)
 
 
+def mark_session_deleted(conn: sqlite3.Connection, session_id: str, *,
+                         now: str) -> bool:
+    """软删除落墓碑：status='deleted'，消息与 FTS 不动（Spec 12 D1）。
+
+    会话不存在返回 False；重复标记幂等返回 True。
+    """
+    cur = conn.execute(
+        "UPDATE sessions SET status='deleted', updated_at=? WHERE session_id=?",
+        (now, session_id),
+    )
+    return cur.rowcount > 0
+
+
+def insert_session_tombstone(conn: sqlite3.Connection, *, session_id: str,
+                             project_id: str, source_kind: str,
+                             created_at: str, updated_at: str) -> None:
+    """墓碑包引用了本库不存在的会话时 INSERT 墓碑行（Spec 12 D4，新设备场景）。
+
+    OR IGNORE 幂等：行已存在（含已墓碑化）时什么都不做。
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions(session_id, project_id, source_kind,"
+        " title, summary, created_at, updated_at, status)"
+        " VALUES(?,?,?,?,?,?,?,'deleted')",
+        (session_id, project_id, source_kind, None, None,
+         created_at, updated_at),
+    )
+
+
+def restore_session(conn: sqlite3.Connection, session_id: str, *,
+                    now: str) -> bool:
+    """本机撤销墓碑：仅当前 status='deleted' 才置回 active，否则 False。"""
+    cur = conn.execute(
+        "UPDATE sessions SET status='active', updated_at=?"
+        " WHERE session_id=? AND status='deleted'",
+        (now, session_id),
+    )
+    return cur.rowcount > 0
+
+
 def refresh_session_hashes(conn: sqlite3.Connection, session_ids: set[str]) -> None:
     for session_id in sorted(session_ids):
         ids = [

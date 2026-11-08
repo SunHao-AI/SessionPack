@@ -18,6 +18,9 @@ from sessionpack.catalog.read import (
     get_messages,
     get_projects,
     get_session,
+    # 墓碑三件套 + 原始 status 查询（Spec 12）：门面可达但不进 __all__，
+    # 对外契约集合由 tests/test_import_contracts.py 冻结，不得扩充。
+    get_session_status,  # noqa: F401
     has_schema,
     list_sessions,
     load_import_files,
@@ -30,9 +33,12 @@ from sessionpack.catalog.write import (
     begin_import_run,
     clear_import_file_error,
     finish_import_run,
+    insert_session_tombstone,  # noqa: F401
+    mark_session_deleted,  # noqa: F401
     refresh_session_hashes,
     register_import_files,
     reset_import_file,
+    restore_session,  # noqa: F401
     save_import_file_state,
     upsert_message,
     upsert_project,

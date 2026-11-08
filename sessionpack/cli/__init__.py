@@ -24,6 +24,7 @@ from sessionpack.cli.read_cmds import (
     cmd_verify,
 )
 from sessionpack.cli.write_cmds import (
+    cmd_delete,
     cmd_export,
     cmd_import,
     cmd_pull,
@@ -41,6 +42,7 @@ _cmd_push = cmd_push
 _cmd_pull = cmd_pull
 _cmd_search = cmd_search
 _cmd_rebuild = cmd_rebuild
+_cmd_delete = cmd_delete
 
 __all__ = [
     "EXIT_ERROR",

@@ -1,4 +1,4 @@
-"""cli 的写入型命令：import / export / push / pull。
+"""cli 的写入型命令：import / export / push / pull / delete。
 
 业务编排集中在 run_xxx（不 print），cmd_xxx 只负责调用 emit 渲染并返回退出码。
 """
@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from sessionpack import archive, catalog, config, export, importer, sync
@@ -268,3 +269,46 @@ def run_rebuild(args) -> CommandResult:
 
 def cmd_rebuild(args) -> int:
     return emit(run_rebuild(args), args.json)
+
+
+def run_delete(args) -> CommandResult:
+    lay = layout(args)
+    if not require_catalog(lay.catalog):
+        return CommandResult(EXIT_USAGE,
+                             err_lines=["索引不存在，请先运行 sessionpack import"])
+    conn = catalog.connect(lay.catalog)
+    try:
+        catalog.init_schema(conn)
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        status = catalog.get_session_status(conn, args.session)
+        if status is None:
+            return CommandResult(EXIT_USAGE,
+                                 err_lines=[f"会话不存在: {args.session}"])
+        if args.undo:
+            if status != "deleted":
+                return CommandResult(
+                    EXIT_USAGE,
+                    err_lines=[f"会话未处于删除状态，无需撤销: {args.session}"])
+            catalog.restore_session(conn, args.session, now=now)
+            conn.commit()
+            line = (f"已撤销删除：会话 {args.session} 已恢复（仅本机生效；"
+                    "其他设备上已导入的墓碑不受影响，需在其上各自撤销）")
+        else:
+            catalog.mark_session_deleted(conn, args.session, now=now)
+            conn.commit()
+            line = (f"已删除会话 {args.session}（本机视图隐藏；"
+                    "export --archive + push 后，删除将随归档包传播且不会因旧包复活）")
+        if args.json:
+            return CommandResult(EXIT_OK, data={
+                "session_id": args.session, "undo": bool(args.undo), "ok": True})
+        return CommandResult(EXIT_OK, out_lines=[line])
+    except (CatalogVersionError, CatalogSchemaError) as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
+    except sqlite3.Error as exc:
+        return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
+    finally:
+        conn.close()
+
+
+def cmd_delete(args) -> int:
+    return emit(run_delete(args), args.json)

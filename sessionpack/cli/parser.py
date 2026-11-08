@@ -85,4 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="确认 --from-archives 会丢弃未归档的会话")
     rebuild.add_argument("--data-dir", default=None)
     rebuild.add_argument("--json", action="store_true")
+
+    dele = sub.add_parser(
+        "delete", help="软删除会话（墓碑，随归档包传播不复活；--undo 仅撤销本机）")
+    dele.add_argument("--session", required=True, help="会话 ID")
+    dele.add_argument("--undo", action="store_true",
+                      help="撤销本机删除（不跨设备传播）")
+    dele.add_argument("--data-dir", default=None)
+    dele.add_argument("--json", action="store_true")
     return parser

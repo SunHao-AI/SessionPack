@@ -85,6 +85,22 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                 session_id = meta["session_id"]
                 session_dir = name.rsplit("/", 1)[0]
                 touched.add(session_id)
+                # 墓碑必须在 upsert 之前落实（Spec 12 D4）：两个 upsert 会在新库
+                # 把会话建成 active；已存在的墓碑行它们不写 status，天然不复活。
+                # status 缺失/active/未知值一律不动（未知值按 active 数据处理）。
+                if meta.get("status") == "deleted":
+                    if not catalog.mark_session_deleted(
+                        conn, session_id,
+                        now=meta.get("updated_at") or meta.get("created_at") or "",
+                    ):
+                        catalog.insert_session_tombstone(
+                            conn, session_id=session_id,
+                            project_id=meta["project_id"],
+                            source_kind=meta.get("source_kind") or "archive",
+                            created_at=meta.get("created_at") or "",
+                            updated_at=meta.get("updated_at")
+                            or meta.get("created_at") or "",
+                        )
                 summary = meta.get("summary") or meta.get("title") or ""
                 if summary:
                     outcome = catalog.upsert_topic(conn, TopicRecord(
