@@ -23,6 +23,7 @@ from sessionpack.cli import build_parser, main
 from sessionpack.cli.write_cmds import run_delete
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 from sessionpack.paths import ensure_layout
+from sessionpack.rebuild import rebuild_from_archives
 from sessionpack.sync import find_archives_with_session
 
 SID = "0123456789abcdef01234567"
@@ -337,3 +338,32 @@ def test_cli_purge_end_to_end_via_parser(tmp_path, capsys):
     conn = catalog.connect(lay.catalog)
     assert catalog.get_session_status(conn, SID) == "purged"
     conn.close()
+
+
+def test_rebuild_keeps_purge_card(tmp_path):
+    """purge → rebuild --from-archives → 终态卡仍在、正文不回。"""
+    root, lay = _purge_seeded(tmp_path)
+    assert _purge_cli(root, SID).exit_code == 0
+    report = rebuild_from_archives(lay, assume_yes=True)
+    assert report.ok, report.error
+    conn = catalog.connect(lay.catalog)
+    assert catalog.get_session_status(conn, SID) == "purged"
+    assert catalog.get_session(conn, SID) is None
+    assert catalog.get_messages(conn, SID) == []
+    conn.close()
+
+
+def test_cli_purge_reports_stale_sync_dir(tmp_path):
+    """同步目录含旧包 → 只报告不改动，命令仍成功。"""
+    root, lay = _purge_seeded(tmp_path)
+    stale = tmp_path / "sync"
+    stale.mkdir()
+    names = sorted(p.name for p in lay.archives.glob("*.zip"))
+    for item in lay.archives.glob("*.zip"):
+        (stale / item.name).write_bytes(item.read_bytes())
+    res = _purge_cli(root, SID, json_out=True, directory=str(stale))
+    assert res.exit_code == 0
+    assert res.data["sync_stale"] == names
+    assert res.data["archives_repacked"] == 1
+    # 同步目录内容原样未动
+    assert sorted(p.name for p in stale.glob("*.zip")) == names
