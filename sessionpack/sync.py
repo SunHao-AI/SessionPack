@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import sqlite3
 import uuid
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +42,30 @@ def _scan_zips(directory: Path) -> list[Path]:
         return []
     return sorted(p for p in directory.glob("*.zip")
                   if not p.name.startswith(_TEMP_PREFIXES))
+
+
+def find_archives_with_session(directory: Path, session_id: str) -> list[str]:
+    """只读探测：directory 下含该会话**内容**的包文件名（Spec 13 D6 报告用）。
+
+    已替换为 purge 卡的包（meta status='purged'、正文为空）不算命中——本机
+    重打包循环与同步目录报告都只关心"还带着内容"的包。读不了的包按"不含"
+    跳过：报告场景宁漏勿错，不阻塞命令。
+    """
+    if not directory.is_dir():
+        return []
+    card = f"sessions/{session_id}/meta.json"
+    hits: list[str] = []
+    for path in _scan_zips(directory):
+        try:
+            with zipfile.ZipFile(path) as zf:
+                if card not in zf.namelist():
+                    continue
+                if json.loads(zf.read(card)).get("status") == "purged":
+                    continue
+                hits.append(path.name)
+        except (OSError, zipfile.BadZipFile, KeyError, ValueError):
+            continue
+    return hits
 
 
 def _atomic_copy(src: Path, dest: Path) -> None:

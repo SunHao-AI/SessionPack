@@ -20,6 +20,7 @@ from sessionpack.catalog.write import (
 )
 from sessionpack.model import MessageRecord, ProjectRecord, TopicRecord
 from sessionpack.paths import ensure_layout
+from sessionpack.sync import find_archives_with_session
 
 SID = "0123456789abcdef01234567"
 SID2 = "76543210fedcba9876543210"
@@ -243,3 +244,15 @@ def test_repak_rejects_invalid_package(tmp_path):
         zout.writestr("extra.txt", "x")  # manifest 外多余条目 → E_UNREGISTERED_FILE
     with pytest.raises(archive.ArchiveError):
         repak_excluding_session(broken, SID, tmp_path / "out")
+
+
+def test_find_archives_with_session_scan(tmp_path):
+    src = _two_session_package(tmp_path)          # 位于 tmp_path/out
+    dest = tmp_path / "sync"
+    dest.mkdir()
+    (dest / src.name).write_bytes(src.read_bytes())
+    (dest / ".tmp-half.zip").write_bytes(b"PK")   # 临时前缀必须被跳过
+    assert find_archives_with_session(dest, SID) == [src.name]
+    assert find_archives_with_session(dest, SID2) == [src.name]
+    assert find_archives_with_session(dest, "f" * 24) == []
+    assert find_archives_with_session(tmp_path / "none", SID) == []
