@@ -6,7 +6,7 @@ _seed/_open/_status 与 tests/test_delete_tombstone.py 同构（不跨测试文�
 """
 from __future__ import annotations
 
-from sessionpack import catalog
+from sessionpack import archive, catalog
 from sessionpack.catalog.write import (
     purge_session,
     upsert_message,
@@ -129,3 +129,58 @@ def test_no_revive_via_upsert(tmp_path):
     assert _status(conn, SID) == "purged"
     assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
     conn.close()
+
+
+def test_import_purged_package_wipes_local_copy(tmp_path):
+    """B 已导入旧包 → 导入 purge 卡包收卡抹除 → 再导旧包不复活。"""
+    _, a = _purge_setup(tmp_path, "a")
+    out = tmp_path / "out"
+    old = archive.build_archive(a, out, "p1")        # purge 前的包（含正文）
+    assert catalog.purge_session(a, SID, now="2026-11-08T12:00:00")
+    a.commit()
+    card = archive.build_archive(a, out, "p1")       # purge 卡包（空正文）
+    _, b = _open(tmp_path, "b")
+    archive.import_archive(b, old.path)
+    assert catalog.get_session_status(b, SID) == "deleted"
+    archive.import_archive(b, card.path)
+    assert catalog.get_session_status(b, SID) == "purged"
+    assert catalog.get_messages(b, SID) == []
+    assert catalog.search_messages(b, "敏感") == []
+    # content_hash 保持 NULL：收尾 refresh_session_hashes 不得回写 purge 卡
+    assert b.execute("SELECT content_hash FROM sessions WHERE session_id=?",
+                     (SID,)).fetchone()[0] is None
+    archive.import_archive(b, old.path)              # 旧包回灌 → 守卫①拦截
+    assert catalog.get_session_status(b, SID) == "purged"
+    assert catalog.get_messages(b, SID) == []
+    b.close()
+    a.close()
+
+
+def test_active_local_copy_forced_purged_on_import(tmp_path):
+    """本机 active 态收到 purge 卡：强制抹除升级（purge 传播强于墓碑）。"""
+    _, a = _purge_setup(tmp_path, "a")
+    assert catalog.purge_session(a, SID, now="2026-11-08T12:00:00")
+    a.commit()
+    card = archive.build_archive(a, tmp_path / "out", "p1")
+    _, b = _open(tmp_path, "b")
+    _seed(b, SID)                                    # B 本地 active 且有正文
+    archive.import_archive(b, card.path)
+    assert catalog.get_session_status(b, SID) == "purged"
+    assert catalog.get_messages(b, SID) == []
+    b.close()
+    a.close()
+
+
+def test_fresh_device_import_purged_package(tmp_path):
+    """全新设备直接导入 purge 卡包：落 purged 终态卡、无任何内容。"""
+    _, a = _purge_setup(tmp_path, "a")
+    assert catalog.purge_session(a, SID, now="2026-11-08T12:00:00")
+    a.commit()
+    card = archive.build_archive(a, tmp_path / "out", "p1")
+    _, fresh = _open(tmp_path, "fresh")
+    archive.import_archive(fresh, card.path)
+    assert catalog.get_session_status(fresh, SID) == "purged"
+    assert catalog.list_sessions(fresh) == []
+    assert catalog.get_messages(fresh, SID) == []
+    fresh.close()
+    a.close()

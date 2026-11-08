@@ -85,6 +85,22 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                 session_id = meta["session_id"]
                 session_dir = name.rsplit("/", 1)[0]
                 touched.add(session_id)
+                if meta.get("status") == "purged":
+                    # purge 卡（Spec 13 三道卡②）：强制落卡后 continue，
+                    # 正文与主题一律不读，空 ndjson 也不必备。
+                    # touched.discard 必需：收尾 refresh_session_hashes 会给
+                    # touched 里的会话回写 content_hash，purged 行必须保持 NULL。
+                    touched.discard(session_id)
+                    catalog.insert_session_purge_marker(
+                        conn, session_id=session_id,
+                        project_id=meta["project_id"],
+                        source_kind=meta.get("source_kind") or "session",
+                        created_at=meta.get("created_at") or "",
+                        updated_at=meta.get("updated_at")
+                        or meta.get("created_at") or "",
+                    )
+                    sessions += 1
+                    continue
                 # 墓碑必须在 upsert 之前落实（Spec 12 D4）：两个 upsert 会在新库
                 # 把会话建成 active；已存在的墓碑行它们不写 status，天然不复活。
                 # status 缺失/active/未知值一律不动（未知值按 active 数据处理）。
