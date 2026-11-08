@@ -40,7 +40,7 @@ def search_messages(
                 " JOIN messages m ON m.session_id=message_fts.session_id"
                 " AND m.message_id=message_fts.message_id"
                 " JOIN sessions s ON s.session_id=m.session_id"
-                " AND s.status != 'deleted'"
+                " AND s.status = 'active'"
                 " WHERE message_fts MATCH ? LIMIT ?",
                 (_fts_expr(term), limit),
             ).fetchall()
@@ -50,7 +50,7 @@ def search_messages(
         "SELECT session_id, message_id, body FROM messages"
         " WHERE body LIKE ? ESCAPE '\\'"
         " AND session_id IN (SELECT session_id FROM sessions"
-        " WHERE status != 'deleted') LIMIT ?",
+        " WHERE status = 'active') LIMIT ?",
         (_like(term), limit),
     ).fetchall()
 
@@ -65,7 +65,7 @@ def list_sessions(
     limit: int | None = 100,
 ) -> list[dict]:
     # 墓碑会话对用户视图隐藏（Spec 12 D2）
-    clauses: list[str] = ["s.status != 'deleted'"]
+    clauses: list[str] = ["s.status = 'active'"]
     params: list[object] = []
     if project_id:
         clauses.append("s.project_id = ?")
@@ -112,7 +112,7 @@ def get_session(conn: sqlite3.Connection, session_id: str) -> dict | None:
     row = conn.execute(
         "SELECT s.*, p.display_name FROM sessions s"
         " LEFT JOIN projects p ON p.project_id = s.project_id"
-        " WHERE s.session_id=? AND s.status != 'deleted'",
+        " WHERE s.session_id=? AND s.status = 'active'",
         (session_id,),
     ).fetchone()
     return dict(row) if row else None
@@ -138,7 +138,7 @@ def get_projects(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT p.*, COUNT(s.session_id) AS session_count FROM projects p"
         " LEFT JOIN sessions s ON s.project_id = p.project_id"
-        " AND s.status != 'deleted'"
+        " AND s.status = 'active'"
         " GROUP BY p.project_id ORDER BY p.display_name"
     )
     return [dict(row) for row in rows]
