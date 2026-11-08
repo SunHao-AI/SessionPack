@@ -157,4 +157,9 @@ def set_sync_dir(root: Path, directory: Path) -> None:
     path = root / CONFIG_NAME
     tmp = root / (CONFIG_NAME + ".tmp")
     tmp.write_text(_dump_toml(data), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        # 目标被占等失败：清掉临时文件再上抛，不留残file（原文件未动）。
+        tmp.unlink(missing_ok=True)
+        raise

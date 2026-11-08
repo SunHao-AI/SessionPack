@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -56,6 +57,27 @@ def _cleanup(path: Path) -> None:
     for extra in _sidecars(path):
         extra.unlink(missing_ok=True)
     path.unlink(missing_ok=True)
+
+
+_REPLACE_RETRIES = 5
+_REPLACE_BACKOFF_S = 0.2
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """os.replace 的有限退避重试。
+
+    Windows 上目标被他进程短时持有（如另一路重建正打开旧库）时
+    os.replace 抛 PermissionError（WinError 32 共享冲突），
+    退避后多半可成；重试耗尽原样上抛，交调用侧回滚。
+    """
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF_S)
 
 
 def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
@@ -140,12 +162,24 @@ def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
         _cleanup_sidecars_only(layout.catalog)
         if layout.catalog.exists():
             bak.unlink(missing_ok=True)
-            os.replace(layout.catalog, bak)
-        os.replace(staging, layout.catalog)
+            _replace_with_retry(layout.catalog, bak)
+        _replace_with_retry(staging, layout.catalog)
     except OSError:
+        # 回滚：把备份恢复回原位置。恢复自身也可能被占用——此时 bak 是
+        # 唯一副本，绝不删除，报清晰错误让用户事后手工归位，不崩栈。
+        restored = True
         if bak.exists() and not layout.catalog.exists():
-            os.replace(bak, layout.catalog)  # 回滚备份
+            try:
+                _replace_with_retry(bak, layout.catalog)
+            except OSError:
+                restored = False
         _cleanup(staging)
+        if not restored:
+            return RebuildReport(
+                ok=False,
+                error=f"换入失败且备份 {bak.name} 暂被他进程占用、未能归位为 "
+                      f"{layout.catalog.name}；数据未丢失，关闭占用进程后将 "
+                      f"{bak.name} 手工改名回去即可")
         return RebuildReport(ok=False, error="换入失败，已回滚，原索引未改动")
     _cleanup_sidecars_only(staging)
     report.backup = str(bak) if bak.exists() else None

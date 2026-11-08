@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,10 +44,18 @@ def _scan_zips(directory: Path) -> list[Path]:
 
 def _atomic_copy(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.parent / (".tmp-" + dest.name)
+    # 临时名带写者标识：并发写者不再互踩在途临时文件（WinError 32）。
+    # 保留 .tmp- 前缀且不以 .zip 结尾，_scan_zips 的残留跳过语义不变。
+    tmp = dest.parent / (
+        f".tmp-{dest.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}")
     try:
         shutil.copy2(src, tmp)
         os.replace(tmp, dest)
+    except (PermissionError, FileExistsError):
+        # 目标正被他进程持有：同名包内容必同（文件名尾 12 位是内容
+        # sha256），视为"已由他人落定"良性消化；否则原样上抛。
+        if not dest.exists():
+            raise
     finally:
         tmp.unlink(missing_ok=True)
 
