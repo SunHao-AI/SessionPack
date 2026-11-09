@@ -23,7 +23,7 @@ BASELINE_FILE = Path(__file__)
 # 避免不同包的同名子模块（catalog.read / server.read）互相串扰。
 LAYER_OF: dict[str, int] = {
     "model": 0, "paths": 0, "audit": 0, "mem": 0, "summary": 0,
-    "config": 0, "textutil": 0,
+    "config": 0, "textutil": 0, "crypto": 0,
     "adapters": 1,
     "catalog": 2,
     "catalog.conn": 2, "catalog.read": 2, "catalog.write": 2,
