@@ -354,17 +354,30 @@ def _run_purge(conn, lay, args, status: str) -> CommandResult:
             continue
         repacked.append(new.name)
     sync_dir = resolve_sync_dir(args, lay)
-    sync_stale = (sync.find_archives_with_session(sync_dir, args.session)
-                  if sync_dir else [])
+    sync_stale: list[str] = []
+    sync_encrypt_unscanned = False
+    if sync_dir:
+        passphrase = (os.environ.get("SESSIONPACK_PASSPHRASE")
+                      if config.sync_encrypt(lay.root) else None)
+        sync_stale = sync.find_archives_with_session(
+            sync_dir, args.session, passphrase=passphrase)
+        # 口令宽松变体（D9：不交互）：加密开着但没给口令且目录真有信封
+        if passphrase is None and config.sync_encrypt(lay.root) \
+                and list(sync_dir.glob("*.spk")):
+            sync_encrypt_unscanned = True
     data = {"session_id": args.session, "purged": True,
             "messages_removed": messages_removed,
             "archives_repacked": len(repacked),
-            "archives_failed": failed, "sync_stale": sync_stale}
+            "archives_failed": failed, "sync_stale": sync_stale,
+            "sync_encrypt_unscanned": sync_encrypt_unscanned}
     lines = [f"已清除会话 {args.session}：抹除消息 {messages_removed} 条，"
              f"重打包 {len(repacked)} 个"]
     lines += [f"重打包失败（旧包原样在场）: {item}" for item in failed]
     lines += [f"同步目录仍含旧包（本命令不改动，请手动处理）: {item}"
               for item in sync_stale]
+    if sync_encrypt_unscanned:
+        lines.append("同步目录含加密信封，未扫描"
+                     "（可设 SESSIONPACK_PASSPHRASE 后重跑查看）")
     if failed:
         return CommandResult(EXIT_ERROR, out_lines=lines, data=data)
     return CommandResult(EXIT_OK, out_lines=lines, data=data)

@@ -91,18 +91,35 @@ def _atomic_write(tmp: Path, blob: bytes, dest: Path) -> None:
         raise
 
 
-def find_archives_with_session(directory: Path, session_id: str) -> list[str]:
-    """只读探测：directory 下含该会话**内容**的包文件名（Spec 13 D6 报告用）。
+def find_archives_with_session(directory: Path, session_id: str,
+                               passphrase: str | None = None) -> list[str]:
+    """列出 directory 中含该会话（未 purge 卡）的包文件名。
 
-    已替换为 purge 卡的包（meta status='purged'、正文为空）不算命中——本机
-    重打包循环与同步目录报告都只关心"还带着内容"的包。读不了的包按"不含"
-    跳过：报告场景宁漏勿错，不阻塞命令。
+    明文 zip 逐字节按现状扫；passphrase 非 None 时另解 `*.spk` 信封（D9）。
+    解密失败按"不含"跳过——维持 purge 报告"宁漏勿错"取态：报告漏报优于
+    把口令错误的无关信封诬报为"仍含旧包"。
     """
     if not directory.is_dir():
         return []
     card = f"sessions/{session_id}/meta.json"
     hits: list[str] = []
-    for path in _scan_zips(directory):
+    for path in _scan_sync_candidates(directory):
+        if _is_envelope_name(path.name):
+            if passphrase is None:
+                continue
+            try:
+                data = crypto.decrypt_envelope(path.read_bytes(), passphrase,
+                                               path.name)
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    if card not in zf.namelist():
+                        continue
+                    if json.loads(zf.read(card)).get("status") == "purged":
+                        continue
+            except (crypto.EnvelopeError, OSError, zipfile.BadZipFile, KeyError,
+                    ValueError, AttributeError):
+                continue
+            hits.append(path.name)
+            continue
         try:
             with zipfile.ZipFile(path) as zf:
                 if card not in zf.namelist():

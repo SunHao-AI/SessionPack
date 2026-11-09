@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sessionpack import archive, catalog
+from sessionpack import archive, catalog, config, sync
 from sessionpack.archive.repak import RepakError, repak_excluding_session
 from sessionpack.catalog.write import (
     purge_session,
@@ -305,7 +305,8 @@ def test_cli_purge_erases_and_repacks(tmp_path):
     assert res.exit_code == 0
     assert res.data == {"session_id": SID, "purged": True,
                         "messages_removed": 1, "archives_repacked": 1,
-                        "archives_failed": [], "sync_stale": []}
+                        "archives_failed": [], "sync_stale": [],
+                        "sync_encrypt_unscanned": False}
     zips = list(lay.archives.glob("*.zip"))
     assert len(zips) == 1 and zips[0].name != old_name   # 旧包已删、新包在场
     assert archive.verify_archive(zips[0]).ok
@@ -335,7 +336,8 @@ def test_cli_purge_end_to_end_via_parser(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"session_id": SID, "purged": True,
                        "messages_removed": 1, "archives_repacked": 1,
-                       "archives_failed": [], "sync_stale": []}
+                       "archives_failed": [], "sync_stale": [],
+                       "sync_encrypt_unscanned": False}
     conn = catalog.connect(lay.catalog)
     assert catalog.get_session_status(conn, SID) == "purged"
     conn.close()
@@ -472,3 +474,60 @@ def test_old_package_install_preserves_purged_status_and_hash(tmp_path):
     ).fetchone()[0] is None
     b.close()
     a.close()
+
+
+# ---------------- 同步目录加密后的 purge 报告（D9） ----------------
+
+def _purge_with_envelope(tmp_path, name="root", *, passphrase="pw-1234"):
+    """A 机 purge 后会话并加密推包到同步目录，返回 (root, lay, share)。"""
+    root, conn = _purge_setup(tmp_path, name)
+    out = tmp_path / f"{name}-archives"
+    archive.build_archive(conn, out, "p1")
+    conn.close()
+    lay = SimpleNamespace(archives=out, root=root)
+    share = tmp_path / f"{name}-share"
+    sync.push_archives(out, share, encrypt=True, passphrase=passphrase)
+    assert len(list(share.glob("*.spk"))) == 1
+    return root, lay, share
+
+
+def test_find_archives_with_envelope_passphrase(tmp_path):
+    _, lay, share = _purge_with_envelope(tmp_path)
+    # 不带口令：信封失明（现状取态）
+    assert sync.find_archives_with_session(share, SID) == []
+    # 带口令：解密扫描命中信封名
+    hits = sync.find_archives_with_session(share, SID, passphrase="pw-1234")
+    assert len(hits) == 1
+    assert hits[0].startswith("spk-") and hits[0].endswith(".spk")
+
+
+def test_find_archives_wrong_passphrase_counts_as_absent(tmp_path):
+    """口令错按"不含"跳过——维持 purge 报告"宁漏勿错"取态。"""
+    _, lay, share = _purge_with_envelope(tmp_path)
+    assert sync.find_archives_with_session(share, SID,
+                                           passphrase="wrong") == []
+
+
+def test_cli_purge_encrypt_hint(tmp_path, monkeypatch):
+    """加密目录：未给口令报告附提示；给了环境变量则列出信封名。"""
+    root, lay, share = _purge_with_envelope(tmp_path, name="hint")
+    # 用 root 下现成 catalog 重开连接跑一次 purge（purge 卡落本机）
+    conn = catalog.connect(root / "catalog.sqlite")
+    catalog.init_schema(conn)
+    assert catalog.get_session_status(conn, SID) == "deleted"
+    conn.close()
+    config.set_sync_dir(root, share)
+    config.set_sync_encrypt(root, True)
+    monkeypatch.delenv("SESSIONPACK_PASSPHRASE", raising=False)
+    res = _purge_cli(root, SID)
+    assert res.exit_code == 0
+    assert res.data["sync_stale"] == []
+    assert res.data["sync_encrypt_unscanned"] is True
+    assert any("同步目录含加密信封，未扫描" in line for line in res.out_lines)
+    # 提供口令 → 命中信封，提示消失
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "pw-1234")
+    res = _purge_cli(root, SID)
+    assert res.exit_code == 0
+    assert res.data["sync_encrypt_unscanned"] is False
+    assert len(res.data["sync_stale"]) == 1
+    assert res.data["sync_stale"][0].startswith("spk-")
