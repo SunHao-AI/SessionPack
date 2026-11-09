@@ -104,4 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     dele.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
     dele.add_argument("--data-dir", default=None)
     dele.add_argument("--json", action="store_true")
+
+    reen = sub.add_parser("reencrypt",
+                          help="把同步目录的明文归档包一次性转为加密信封")
+    reen.add_argument("--dir", help="同步目录（缺省读 config.toml）")
+    reen.add_argument("--data-dir", help="数据目录（config.toml/catalog.db 所在）")
+    reen.add_argument("--json", action="store_true", help="结构化输出")
     return parser

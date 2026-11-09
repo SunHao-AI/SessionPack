@@ -11,7 +11,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from sessionpack import archive, catalog, config, export, importer, sync
+from sessionpack import archive, catalog, config, crypto, export, importer, sync
 from sessionpack.adapters import get_adapter
 from sessionpack.audit import ReadAudit, ReadBoundaryError
 from sessionpack.catalog.conn import CatalogSchemaError, CatalogVersionError
@@ -27,6 +27,7 @@ from sessionpack.cli.common import (
 )
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.rebuild import rebuild_from_archives, rebuild_fts_index
+from sessionpack.textutil import failure_text
 
 
 def run_import(args) -> CommandResult:
@@ -269,6 +270,75 @@ def run_pull(args) -> CommandResult:
 
 def cmd_pull(args) -> int:
     return emit(run_pull(args), args.json)
+
+
+def run_reencrypt(args) -> CommandResult:
+    """一次性把同步目录明文 zip 转为加密信封（D8，fail-safe）。
+
+    每个包严格走"verify → 加密写 .tmp-enc-* → 解密自检字节相等 →
+    os.replace 改名 → 删原 zip"，自检失败绝不动原包。
+    """
+    lay = layout(args)
+    target = resolve_sync_dir(args, lay)
+    if target is None:
+        return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
+    if not target.is_dir():
+        return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
+    passphrase = _passphrase("旧明文包加密口令: ")
+    if passphrase is None:
+        return CommandResult(EXIT_USAGE,
+                             err_lines=["已取消：加密需要口令"
+                                        "（两次输入为空或不一致）"])
+    converted = 0
+    skipped: list[str] = []
+    errors: list[str] = []
+    # 等价于 sync._scan_zips 的本地扫描（跨包私有访问被 E_PRIVATE 拦截）：
+    # 只收 *.zip 且排除点号开头（含 .tmp-/.build- 原子写残留前缀），天然幂等。
+    plain_pkgs = sorted(p for p in target.glob("*.zip")
+                        if not p.name.startswith("."))
+    for src in plain_pkgs:
+        check = archive.verify_archive(src)
+        if not check.ok:
+            codes = ", ".join(issue.code for issue in check.issues)
+            skipped.append(f"{src.name}: 校验未通过（{codes}）")
+            continue
+        name = crypto.new_envelope_name()
+        tmp = target / f".tmp-enc-{name}"
+        try:
+            plain = src.read_bytes()
+            blob = crypto.encrypt_envelope(plain, passphrase, name)
+            try:
+                tmp.write_bytes(blob)
+            except OSError as exc:
+                errors.append(f"{src.name}: {failure_text(exc)}")
+                continue
+            if crypto.decrypt_envelope(tmp.read_bytes(), passphrase,
+                                       name) != plain:
+                errors.append(f"{src.name}: 自检失败（解密与原包不一致），已保留原包")
+                continue
+            try:
+                os.replace(tmp, target / name)
+            except OSError as exc:
+                errors.append(f"{src.name}: {failure_text(exc)}")
+                continue
+            src.unlink()
+            converted += 1
+        except (crypto.EnvelopeError, OSError) as exc:
+            errors.append(f"{src.name}: {failure_text(exc)}")
+        finally:
+            tmp.unlink(missing_ok=True)
+    payload = {"sync_dir": str(target), "converted": converted,
+               "skipped": skipped, "errors": errors}
+    lines = [f"已转换 {converted} 个包为加密信封，"
+             f"跳过 {len(skipped)}，失败 {len(errors)}"]
+    lines += [f"跳过: {item}" for item in skipped]
+    lines += [f"转换失败: {item}" for item in errors]
+    code = EXIT_ERROR if errors else EXIT_OK
+    return CommandResult(code, out_lines=lines, data=payload)
+
+
+def cmd_reencrypt(args) -> int:
+    return emit(run_reencrypt(args), args.json)
 
 
 def run_rebuild(args) -> CommandResult:

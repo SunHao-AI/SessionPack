@@ -582,3 +582,66 @@ def test_run_rebuild_from_archives_bad_zip_fail_closed(tmp_path: Path) -> None:
     assert (data_dir / "catalog.sqlite").read_bytes() == before
     assert not list(data_dir.glob("catalog.sqlite.staging*"))
     assert not (data_dir / "catalog.sqlite.bak").exists()
+
+
+# ---------------- reencrypt 迁移（Spec 14 D8） ----------------
+
+def test_reencrypt_converts_and_roundtrips(tmp_path, monkeypatch, memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    zips = list(share.glob("*.zip"))
+    assert len(zips) == 1
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = main(["reencrypt", "--dir", str(share), "--data-dir", str(data_dir)])
+    assert res == 0
+    assert not list(share.glob("*.zip"))             # 原 zip 已删
+    assert len(list(share.glob("spk-*.spk"))) == 1   # 信封落位
+    # 迁移后 pull 链路照常（口令同一条）
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--data-dir", str(data_b),
+                 "--memory-root", str(memory_tree)]) == 0
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
+    assert list((data_b / "archives").glob("*.zip"))
+
+
+def test_reencrypt_skips_envelopes_and_bad_verify(tmp_path, monkeypatch,
+                                                  memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    good = sorted(p.name for p in share.glob("*.zip"))
+    assert len(good) == 1
+    (share / ("spk-" + "0" * 32 + ".spk")).write_bytes(b"already envelope")
+    (share / "broken.zip").write_bytes(b"not a zip")
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = main(["reencrypt", "--dir", str(share), "--json",
+                "--data-dir", str(data_dir)])
+    assert res == 0
+    # _run_cli 的 json 渲染不进 capsys 返回值断言路径，直接查目录状态
+    assert not (share / good[0]).exists()            # 好包已转成信封并删除
+    assert (share / "broken.zip").exists()           # 校验未通过：只跳过，原包保留
+    assert len(list(share.glob("spk-*.spk"))) == 2   # 原有假信封 + 新信封
+
+
+def test_reencrypt_missing_dir_usage(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "x")
+    res = main(["reencrypt", "--dir", str(tmp_path / "nope"),
+                "--data-dir", str(tmp_path / "data")])
+    assert res == 2
+
+
+def test_reencrypt_empty_passphrase_usage(tmp_path, monkeypatch, memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    monkeypatch.delenv("SESSIONPACK_PASSPHRASE", raising=False)
+    monkeypatch.setattr("sessionpack.cli.write_cmds.getpass.getpass",
+                        lambda prompt="": "")
+    res = main(["reencrypt", "--dir", str(share), "--data-dir", str(data_dir)])
+    assert res == 2

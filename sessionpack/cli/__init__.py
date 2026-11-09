@@ -30,6 +30,7 @@ from sessionpack.cli.write_cmds import (
     cmd_pull,
     cmd_push,
     cmd_rebuild,
+    cmd_reencrypt,
 )
 
 _cmd_doctor = cmd_doctor
@@ -42,6 +43,7 @@ _cmd_push = cmd_push
 _cmd_pull = cmd_pull
 _cmd_search = cmd_search
 _cmd_rebuild = cmd_rebuild
+_cmd_reencrypt = cmd_reencrypt
 _cmd_delete = cmd_delete
 
 __all__ = [
