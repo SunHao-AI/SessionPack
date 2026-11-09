@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import getpass
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -149,14 +151,39 @@ def _missing_dir_errors(lay) -> list[str]:
             "或先运行 sessionpack push --dir DIR 落配置"] + warnings
 
 
+def _passphrase(prompt: str) -> str | None:
+    """口令采集（D4）：环境变量优先（脚本/计划任务静默非交互），
+    否则 getpass 两次一致。空口令或两次不一致返回 None，由调用方出
+    EXIT_USAGE 提示；口令只经内存，不落盘、不进日志。"""
+    env = os.environ.get("SESSIONPACK_PASSPHRASE")
+    if env:
+        return env
+    first = getpass.getpass(prompt)
+    if not first:
+        return None
+    if getpass.getpass("再次输入确认: ") != first:
+        return None
+    return first
+
+
 def run_push(args) -> CommandResult:
     lay = layout(args)
     target = resolve_sync_dir(args, lay)
     if target is None:
         return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
-    result = sync.push_archives(lay.archives, target, dry_run=args.dry_run)
+    # 三态：--encrypt / --no-encrypt 显式覆盖，未表态读 [sync].encrypt（D7）
+    encrypt = config.sync_encrypt(lay.root) if args.encrypt is None \
+        else args.encrypt
+    passphrase = _passphrase("同步加密口令: ") if encrypt else None
+    if encrypt and passphrase is None:
+        return CommandResult(EXIT_USAGE,
+                             err_lines=["已取消：加密推送需要口令"
+                                        "（两次输入为空或不一致）"])
+    result = sync.push_archives(lay.archives, target, dry_run=args.dry_run,
+                                encrypt=encrypt, passphrase=passphrase)
     payload = {
         "sync_dir": str(target),
+        "encrypt": encrypt,
         "pushed": result.pushed,
         "skipped_existing": result.skipped_existing,
         "skipped_unverified": list(result.skipped_unverified),
@@ -165,17 +192,22 @@ def run_push(args) -> CommandResult:
     }
     prefix = "[dry-run] " if args.dry_run else ""
     verb = "将推送" if args.dry_run else "已推送"
-    lines = [f"{prefix}{verb} {result.pushed} 个包共 {result.bytes} 字节，"
+    mode = "（加密）" if encrypt else ""
+    lines = [f"{prefix}{verb} {result.pushed} 个包共 {result.bytes} 字节{mode}，"
              f"跳过已存在 {result.skipped_existing}，"
              f"跳过未通过校验 {len(result.skipped_unverified)}"]
     lines += [f"跳过未通过校验的包: {item}" for item in result.skipped_unverified]
     errors = [f"推送失败: {item}" for item in result.errors]
     if result.errors:
         return CommandResult(EXIT_ERROR, out_lines=lines, err_lines=errors, data=payload)
-    # 落配置对 JSON 与文本两种模式同样生效，与原文一致
-    if args.dir and not args.dry_run:
+    # 落配置对 JSON 与文本两种模式同样生效，与原文一致；encrypt 沿用 dir 的
+    # 既有行为：显式指定过（args.encrypt 非 None）且非 dry-run 时持久化（D7）
+    if not args.dry_run:
         try:
-            config.set_sync_dir(lay.root, target)
+            if args.dir:
+                config.set_sync_dir(lay.root, target)
+            if args.encrypt is not None:
+                config.set_sync_encrypt(lay.root, args.encrypt)
         except config.ConfigWriteError as exc:
             # 推送已成功这一事实仍要报告，只有"落配置"这一步失败
             return CommandResult(EXIT_ERROR, out_lines=lines, data=payload,
@@ -194,10 +226,22 @@ def run_pull(args) -> CommandResult:
         return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
     if not target.is_dir():
         return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
+    # 自适应：目录无 .spk 则完全不触碰口令（D4/D7）
+    envelopes = [p for p in target.glob("*.spk") if not p.name.startswith(".")]
+    passphrase = None
+    if envelopes:
+        passphrase = _passphrase("同步加密口令: ")
+        if passphrase is None:
+            return CommandResult(EXIT_USAGE,
+                                 err_lines=[f"同步目录含 {len(envelopes)} 个加密信封，"
+                                            "需要口令（两次输入为空或不一致，"
+                                            "或设置 SESSIONPACK_PASSPHRASE）"])
     conn = catalog.connect(lay.catalog)
     try:
         catalog.init_schema(conn)
-        result = sync.pull_archives(lay.archives, target, conn)
+        result = sync.pull_archives(lay.archives, target, conn,
+                                    encrypt=bool(envelopes),
+                                    passphrase=passphrase)
     except (CatalogVersionError, CatalogSchemaError) as exc:
         return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
     finally:

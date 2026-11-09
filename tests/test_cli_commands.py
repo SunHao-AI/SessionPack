@@ -6,7 +6,7 @@ import argparse
 import zipfile
 from pathlib import Path
 
-from sessionpack import archive, catalog
+from sessionpack import archive, catalog, config
 from sessionpack.cli import build_parser, main
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.cli.read_cmds import run_doctor, run_scan, run_verify
@@ -22,7 +22,7 @@ from sessionpack.model import MessageRecord, ProjectRecord
 
 def _ns(**kwargs) -> argparse.Namespace:
     """构造与 parser 等价的 args 对象，避免每个用例重复铺默认值。"""
-    base = dict(memory_root=None, data_dir=None, json=False)
+    base = dict(memory_root=None, data_dir=None, json=False, encrypt=None)
     base.update(kwargs)
     return argparse.Namespace(**base)
 
@@ -198,6 +198,108 @@ def test_run_push_dry_run_never_writes_config(tmp_path: Path) -> None:
     res = run_push(_ns(data_dir=str(data_dir), dir=str(sync_dir), dry_run=True))
     assert res.exit_code == 0
     assert (data_dir / "config.toml").read_text(encoding="utf-8") == original
+
+
+# ---------------- push/pull 加密模式（Spec 14 D4/D7） ----------------
+
+def _push_built_package(tmp_path, memory_tree):
+    """走完整链路备一个本机归档包：import → export --archive，返回 data_dir。"""
+    data_dir = tmp_path / "data"
+    assert main(["import", "--data-dir", str(data_dir),
+                 "--memory-root", str(memory_tree)]) == 0
+    conn = catalog.connect(data_dir / "catalog.sqlite")
+    try:
+        project_id = sorted(p["project_id"] for p in catalog.get_projects(conn))[0]
+    finally:
+        conn.close()
+    assert main(["export", "--archive", f"--project={project_id}",
+                 "--out", str(data_dir / "archives"),
+                 "--data-dir", str(data_dir)]) == 0
+    return data_dir
+
+
+def test_push_encrypt_env_var_and_persist(tmp_path, monkeypatch, capsys,
+                                          memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = main(["push", "--dir", str(share), "--encrypt",
+                "--data-dir", str(data_dir)])
+    assert res == 0
+    envelopes = list(share.glob("spk-*.spk"))
+    assert len(envelopes) == 1
+    assert list((data_dir / "archives").glob("*.zip"))   # 本机仍是明文包
+    # --encrypt 与 dir 一样在成功后持久化
+    assert config.sync_encrypt(Path(data_dir)) is True
+
+
+def test_push_encrypt_dry_run_env_var_no_write(tmp_path, monkeypatch, memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = main(["push", "--dir", str(share), "--encrypt", "--dry-run",
+                "--data-dir", str(data_dir)])
+    assert res == 0
+    assert not share.exists()                        # dry-run 不落目录不写文件
+    assert config.sync_encrypt(Path(data_dir)) is False  # dry-run 不持久化
+
+
+def test_push_encrypt_no_passphrase_usage(tmp_path, monkeypatch, capsys,
+                                          memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    monkeypatch.delenv("SESSIONPACK_PASSPHRASE", raising=False)
+    monkeypatch.setattr("sessionpack.cli.write_cmds.getpass.getpass",
+                        lambda prompt="": "")       # 交互空口令 → 拒绝
+    res = main(["push", "--dir", str(tmp_path / "share"), "--encrypt",
+                "--data-dir", str(data_dir)])
+    assert res == 2
+    assert "口令" in capsys.readouterr().err
+
+
+def test_push_no_encrypt_explicit_overrides_config(tmp_path, monkeypatch, capsys,
+                                                   memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    config.set_sync_encrypt(Path(data_dir), True)    # 配置里开着加密
+    share = tmp_path / "share"
+    res = main(["push", "--dir", str(share), "--no-encrypt",
+                "--data-dir", str(data_dir)])
+    assert res == 0
+    assert list(share.glob("*.zip"))                 # 显式覆盖后推的是明文
+    assert not list(share.glob("*.spk"))
+    assert config.sync_encrypt(Path(data_dir)) is False  # 覆盖同时持久化
+
+
+def test_pull_encrypt_env_var(tmp_path, monkeypatch, memory_tree):
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    assert main(["push", "--dir", str(share), "--encrypt",
+                 "--data-dir", str(data_dir)]) == 0
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--data-dir", str(data_b),
+                 "--memory-root", str(memory_tree)]) == 0
+    # B 机器清空 archives，只靠 pull 回灌
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
+    assert list((data_b / "archives").glob("*.zip"))  # 落的是规范包名
+    assert not list((data_b / "archives").glob("*.spk"))
+
+
+def test_pull_plain_dir_ignores_env_var(tmp_path, monkeypatch, memory_tree):
+    """pull 只看文件后缀自适应：明文目录有环境变量也不询问、不报错（D7）。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    monkeypatch.delenv("SESSIONPACK_PASSPHRASE", raising=False)
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--data-dir", str(data_b),
+                 "--memory-root", str(memory_tree)]) == 0
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
+    assert list((data_b / "archives").glob("*.zip"))
 
 
 def test_run_pull_requires_existing_dir(tmp_path: Path) -> None:

@@ -60,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--dir", default=None, help="本次使用的同步目录（缺省读配置）")
     push.add_argument("--dry-run", action="store_true",
                       help="只列出将推送的文件与字节数，不写入任何东西")
+    enc = push.add_mutually_exclusive_group()
+    enc.add_argument("--encrypt", dest="encrypt", action="store_true",
+                     default=None, help="推送信封加密（成功后持久化到 [sync].encrypt）")
+    enc.add_argument("--no-encrypt", dest="encrypt", action="store_false",
+                     default=None, help="明文推送（同样持久化该选择）")
     push.add_argument("--data-dir", default=None)
     push.add_argument("--json", action="store_true")
 

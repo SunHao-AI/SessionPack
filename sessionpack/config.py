@@ -42,6 +42,10 @@ def _shape_warnings(data: dict) -> list[str]:
         return []
     if not isinstance(section, dict):
         return ["config.toml 中 sync 应为 [sync] 表，同步目录未生效"]
+    enc = section.get("encrypt")
+    if enc is not None and not isinstance(enc, bool):
+        return [f"config.toml 中 [sync].encrypt 应为布尔值，"
+                f"实得 {type(enc).__name__}，加密开关未生效"]
     raw = section.get("dir")
     if raw is None:
         return []

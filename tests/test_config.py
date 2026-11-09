@@ -208,3 +208,11 @@ def test_set_sync_encrypt_failclosed_on_fatal(tmp_path):
     (tmp_path / "config.toml").write_text("[sync\n", encoding="utf-8")
     with pytest.raises(config.ConfigWriteError):
         config.set_sync_encrypt(tmp_path, True)
+
+
+def test_shape_warning_encrypt_not_bool(tmp_path: Path) -> None:
+    """[sync].encrypt 非布尔值要出警告，与 dir 同取态（消除静默失效）。"""
+    (tmp_path / "config.toml").write_text(
+        "[sync]\nencrypt = \"yes\"\n", encoding="utf-8")
+    _, warnings = config.load_config(tmp_path)
+    assert any("encrypt" in w for w in warnings)

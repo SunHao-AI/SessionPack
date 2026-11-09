@@ -30,7 +30,7 @@ from tests.conftest import SID_A, SID_B
 
 def _ns(**kwargs) -> argparse.Namespace:
     """构造与 parser 等价的 args 对象（与 test_cli_commands 同法，测试间不互导）。"""
-    base = dict(memory_root=None, data_dir=None, json=False)
+    base = dict(memory_root=None, data_dir=None, json=False, encrypt=None)
     base.update(kwargs)
     return argparse.Namespace(**base)
 
