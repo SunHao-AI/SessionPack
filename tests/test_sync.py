@@ -425,3 +425,121 @@ def test_push_ignores_foreign_garbage_when_matching(memory_tree, tmp_path):
     assert result.pushed == len(built)
     assert not result.errors
     assert (share / ("spk-" + "f" * 32 + ".spk")).read_bytes() == b"garbage"
+
+
+# ---------------- 加密拉取（Spec 14 D3/D6） ----------------
+
+def _pull_target(tmp_path):
+    """返回（本机 archives 目录路径, 全新索引 conn）。"""
+    return tmp_path / "dst-archives", _fresh_conn(tmp_path)
+
+
+def _encrypt_share(memory_tree, tmp_path):
+    """加密推送一整套包，返回 (src, share, built)。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert len(list(share.glob("*.spk"))) == len(built)
+    return src, share, built
+
+
+def test_pull_encrypt_roundtrip(memory_tree, tmp_path):
+    src, share, built = _encrypt_share(memory_tree, tmp_path)
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert not result.errors
+    assert result.pulled == len(built)
+    # 信封名与内容无关，落本机必须重建规范包名（与 src 构建出的名字一致）
+    assert {p.name for p in dst.glob("*.zip")} == {b.path.name for b in built}
+    assert result.sessions_added == 2
+    assert result.messages_added == 4
+    assert catalog.stats(conn)["messages"] == 4
+    assert not list(dst.glob("*.spk"))       # 本机从不落信封文件
+    conn.close()
+
+
+def test_pull_encrypt_rejects_missing_passphrase(memory_tree, tmp_path):
+    _, share, _ = _encrypt_share(memory_tree, tmp_path)
+    dst, conn = _pull_target(tmp_path)
+    with pytest.raises(ValueError) as exc:
+        sync.pull_archives(dst, share, conn, encrypt=True)
+    assert "E201" in str(exc.value)
+    conn.close()
+
+
+def test_pull_encrypt_wrong_passphrase_skips_all(memory_tree, tmp_path):
+    """口令错：全部信封入 skipped_invalid，本机一个文件都不落（spec §6）。"""
+    _, share, built = _encrypt_share(memory_tree, tmp_path)
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True,
+                                passphrase="错的口令")
+    assert result.pulled == 0
+    assert len(result.skipped_invalid) == len(built)
+    assert all("口令错误或文件损坏" in item for item in result.skipped_invalid)
+    assert not dst.exists() or list(dst.iterdir()) == []
+    conn.close()
+
+
+def test_pull_encrypt_tampered_envelope_skipped(memory_tree, tmp_path):
+    """篡改密文字节 → GCM 认证失败，跳过且不落本机文件。"""
+    _, share, built = _encrypt_share(memory_tree, tmp_path)
+    env = sorted(share.glob("*.spk"))[0]
+    blob = bytearray(env.read_bytes())
+    blob[-1] ^= 0x01
+    env.write_bytes(bytes(blob))
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert result.pulled == len(built) - 1   # 其余信封照常导入
+    assert len(result.skipped_invalid) == 1
+    assert env.name in result.skipped_invalid[0]
+    assert "口令错误或文件损坏" in result.skipped_invalid[0]
+    conn.close()
+
+
+def test_pull_encrypt_renamed_envelope_skipped(memory_tree, tmp_path):
+    """AAD 绑定文件名（D5）：云侧改名后认证必失败，坏信封不伤其余。"""
+    _, share, built = _encrypt_share(memory_tree, tmp_path)
+    env = sorted(share.glob("*.spk"))[0]
+    env.rename(share / ("spk-" + "a" * 32 + ".spk"))
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert result.pulled == len(built) - 1
+    assert len(result.skipped_invalid) == 1
+    assert "spk-" + "a" * 32 + ".spk" in result.skipped_invalid[0]
+    conn.close()
+
+
+def test_pull_encrypt_idempotent(memory_tree, tmp_path):
+    """再拉一次：规范包名的尾 12 位命中本机 id 集合，全部跳过。"""
+    _, share, built = _encrypt_share(memory_tree, tmp_path)
+    dst, conn = _pull_target(tmp_path)
+    sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    again = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert again.pulled == 0
+    assert again.skipped_existing == len(built)
+    assert again.sessions_added == 0
+    assert again.messages_added == 0
+    conn.close()
+
+
+def test_pull_encrypt_mixed_zip_spk_first_wins(memory_tree, tmp_path):
+    """同 archive_id 的明文与信封并存（迁移中间态）：先导入者赢，另一个跳过。"""
+    src, share, built = _encrypt_share(memory_tree, tmp_path)
+    sync.push_archives(src, share)           # 明文也放进去
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert result.pulled == len(built)               # zip 在候选中排先，先导
+    assert result.skipped_existing == len(built)     # 信封同 id 全判已存在
+    conn.close()
+
+
+def test_pull_plain_mode_ignores_envelopes(memory_tree, tmp_path):
+    """不开加密时 .spk 视为不可见（不开加密零行为变更，spec 目标 5）。"""
+    _, share, _ = _encrypt_share(memory_tree, tmp_path)
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn)
+    assert result.pulled == 0
+    assert result.skipped_existing == 0
+    assert not result.skipped_invalid
+    assert not result.errors
+    conn.close()

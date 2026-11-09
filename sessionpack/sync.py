@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sessionpack import archive, crypto
+from sessionpack.archive import build as archive_build
 from sessionpack.textutil import failure_text
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
@@ -219,7 +220,18 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
                       bytes=total, errors=tuple(errors))
 
 
-def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
+def pull_archives(archives_dir: Path, sync_dir: Path, conn,
+                  *, encrypt: bool = False,
+                  passphrase: str | None = None) -> SyncResult:
+    """把同步目录的包拉进本机 archives/ 并导入索引（只增不删，G7：源零改动）。
+
+    `*.zip` 分支与历史版本逐字节一致；encrypt=True 时另解 `*.spk` 信封：
+    内存解密 → 规范包名原子落盘 → verify → import，解密/结构失败一律入
+    skipped_invalid（口令错与文件损坏对用户同为"不可用"，报告不区分 E201/E202，
+    也避免异常文本混入本机路径）。
+    """
+    if encrypt and not passphrase:
+        raise ValueError("E201: 加密拉取需要口令")
     archives_dir = Path(archives_dir)
     pulled = 0
     existing = 0
@@ -233,36 +245,83 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn) -> SyncResult:
     # 无 id12 尾巴的包以文件名判同，避免每轮重复复制+导入；
     # .tmp-/.build- 前缀的强杀残留不算"已存在"，可被规范包覆盖清掉
     local_names = {p.name for p in _scan_zips(archives_dir)}
-    for src in _scan_zips(sync_dir):
-        tail = _id_tail(src.name)
-        if (tail and tail in local_ids) or src.name in local_names:
+    for src in _scan_sync_candidates(sync_dir):
+        if not _is_envelope_name(src.name):
+            tail = _id_tail(src.name)
+            if (tail and tail in local_ids) or src.name in local_names:
+                existing += 1
+                continue
+            check = archive.verify_archive(src)
+            if not check.ok:
+                codes = ", ".join(issue.code for issue in check.issues)
+                invalid.append(f"{src.name}: {codes}")
+                continue
+            dest = archives_dir / src.name
+            try:
+                size = src.stat().st_size
+                _atomic_copy(src, dest)
+            except OSError as exc:
+                errors.append(f"{src.name}: {failure_text(exc)}")
+                continue
+            try:
+                imported = archive.import_archive(conn, dest)
+            except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
+                errors.append(f"{src.name}: 已复制但导入失败 "
+                              f"{failure_text(exc)}")
+                continue
+            pulled += 1
+            total += size
+            sessions_added += imported.sessions_created
+            messages_added += imported.messages_inserted
+            if tail:
+                local_ids.add(tail)
+            local_names.add(src.name)
+            continue
+        if not encrypt:
+            continue            # 不开加密时信封视为不可见（零行为变更）
+        assert passphrase is not None      # 收窄：入口已校验 E201
+        try:
+            data = crypto.decrypt_envelope(src.read_bytes(), passphrase,
+                                           src.name)
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = json.loads(zf.read(archive.MANIFEST_NAME))
+            archive_id = manifest["archive_id"]
+            project_slug = archive_build._slug(       # lint-imports: allow-private
+                manifest["project"]["project_id"])
+            canon = (f"{project_slug}-"
+                     f"{manifest['created_at'][:10]}-{archive_id[:12]}.zip")
+        except (crypto.EnvelopeError, zipfile.BadZipFile, KeyError, ValueError):
+            invalid.append(f"{src.name}: 口令错误或文件损坏")
+            continue
+        if archive_id[:12] in local_ids or canon in local_names:
             existing += 1
             continue
-        check = archive.verify_archive(src)
-        if not check.ok:
-            codes = ", ".join(issue.code for issue in check.issues)
-            invalid.append(f"{src.name}: {codes}")
-            continue
-        dest = archives_dir / src.name
+        dest = archives_dir / canon
+        tmp = archives_dir / f".tmp-{canon}.{os.getpid()}." \
+                             f"{uuid.uuid4().hex[:8]}"
         try:
-            size = src.stat().st_size
-            _atomic_copy(src, dest)
+            _atomic_write(tmp, data, dest)
         except OSError as exc:
             errors.append(f"{src.name}: {failure_text(exc)}")
+            continue
+        check = archive.verify_archive(dest)
+        if not check.ok:
+            dest.unlink(missing_ok=True)
+            invalid.append(f"{src.name}: "
+                           f"{', '.join(i.code for i in check.issues)}")
             continue
         try:
             imported = archive.import_archive(conn, dest)
         except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
-            errors.append(f"{src.name}: 已复制但导入失败 "
+            errors.append(f"{src.name}: 已落盘但导入失败 "
                           f"{failure_text(exc)}")
             continue
         pulled += 1
-        total += size
         sessions_added += imported.sessions_created
         messages_added += imported.messages_inserted
-        if tail:
-            local_ids.add(tail)
-        local_names.add(src.name)
+        total += src.stat().st_size
+        local_ids.add(archive_id[:12])
+        local_names.add(canon)
     return SyncResult(pulled=pulled, skipped_existing=existing,
                       skipped_invalid=tuple(invalid),
                       sessions_added=sessions_added,
