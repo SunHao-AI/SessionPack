@@ -570,3 +570,56 @@ def test_pull_encrypt_read_failure_goes_to_errors(memory_tree, tmp_path,
     assert str(tmp_path) not in joined and "C:\\Users" not in joined
     assert len(list(dst.glob("*.zip"))) == len(built) - 1
     conn.close()
+
+
+def test_two_device_encrypted_sync_roundtrip(memory_tree: Path, tmp_path: Path,
+                                             monkeypatch, capsys) -> None:
+    """双设备经同一加密同步目录互通有无（spec §7 端到端项）：
+    A 推信封、B pull 解密导入；B 再推走同一信封链路；口令错的一方全跳过。"""
+    passphrase = "s3cret-pass"                    # A/B/C 共用同一口令常量
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", passphrase)
+    # 设备 A：import → export --all --archive（包落 data_dir/archives/，§2.2）
+    data_a = tmp_path / "data-a"
+    assert main(["import", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_a)]) == 0
+    assert main(["export", "--data-dir", str(data_a), "--all", "--archive",
+                 "--out", str(data_a / "archives")]) == 0
+    assert len(list((data_a / "archives").glob("*.zip"))) == 2   # memory_tree 两个项目
+    # 共享同步目录：A 加密推送（--dir 现场指定并持久化）
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share), "--encrypt",
+                 "--data-dir", str(data_a)]) == 0
+    assert len(list(share.glob("spk-*.spk"))) == 2
+    # 云侧视角：目录里只有信封，明文包一个都不留
+    assert not list(share.glob("*.zip"))
+    # 设备 B：pull 按后缀自适应解密导入（口令来自环境变量，零配置键参与，D7）
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_b)]) == 0
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
+    assert len(list((data_b / "archives").glob("*.zip"))) == 2
+    assert not list((data_b / "archives").glob("*.spk"))
+    # B 可检索：与 test_two_device_sync_roundtrip 同口径，用 memory_tree 已知关键词
+    conn_b = catalog.connect(data_b / "catalog.sqlite")
+    try:
+        assert catalog.search_messages(conn_b, "sha256")
+    finally:
+        conn_b.close()
+    # B 再推：与 A 同名同 archive_id 的包按 id 判重全跳过，仍走 --encrypt 链路
+    assert main(["push", "--dir", str(share), "--encrypt",
+                 "--data-dir", str(data_b)]) == 0
+    assert len(list(share.glob("spk-*.spk"))) == 2
+    # 设备 A 回拉：同 id 判重跳过，口令一致不报错
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_a)]) == 0
+    assert "已拉取" in capsys.readouterr().out
+    # 口令错的设备 C：信封全部进 skipped_invalid，本机 archives 零落盘
+    data_c = tmp_path / "data-c"
+    assert main(["import", "--memory-root", str(memory_tree),
+                 "--data-dir", str(data_c)]) == 0
+    for p in (data_c / "archives").glob("*.zip"):
+        p.unlink()
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "wrong-pass")
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_c)]) == 0
+    assert list((data_c / "archives").iterdir()) == []
