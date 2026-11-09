@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sessionpack import archive, crypto
-from sessionpack.archive import build as archive_build
 from sessionpack.textutil import failure_text
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
@@ -281,16 +280,21 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
             continue            # 不开加密时信封视为不可见（零行为变更）
         assert passphrase is not None      # 收窄：入口已校验 E201
         try:
-            data = crypto.decrypt_envelope(src.read_bytes(), passphrase,
-                                           src.name)
+            blob = src.read_bytes()
+        except OSError as exc:
+            errors.append(f"{src.name}: {failure_text(exc)}")
+            continue
+        size = len(blob)          # 记解密前的信封字节数，与 push 侧口径对称
+        try:
+            data = crypto.decrypt_envelope(blob, passphrase, src.name)
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 manifest = json.loads(zf.read(archive.MANIFEST_NAME))
             archive_id = manifest["archive_id"]
-            project_slug = archive_build._slug(       # lint-imports: allow-private
-                manifest["project"]["project_id"])
-            canon = (f"{project_slug}-"
-                     f"{manifest['created_at'][:10]}-{archive_id[:12]}.zip")
-        except (crypto.EnvelopeError, zipfile.BadZipFile, KeyError, ValueError):
+            canon = archive.canonical_zip_name(
+                manifest["project"]["project_id"], manifest["created_at"],
+                archive_id)
+        except (crypto.EnvelopeError, zipfile.BadZipFile, KeyError, TypeError,
+                ValueError):
             invalid.append(f"{src.name}: 口令错误或文件损坏")
             continue
         if archive_id[:12] in local_ids or canon in local_names:
@@ -319,7 +323,7 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
         pulled += 1
         sessions_added += imported.sessions_created
         messages_added += imported.messages_inserted
-        total += src.stat().st_size
+        total += size
         local_ids.add(archive_id[:12])
         local_names.add(canon)
     return SyncResult(pulled=pulled, skipped_existing=existing,

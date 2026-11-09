@@ -47,6 +47,14 @@ def _slug(text: str) -> str:
     return cleaned or "project"
 
 
+def canonical_zip_name(project_id: str, created_at: str, archive_id: str) -> str:
+    """归档包名唯一公式：`<slug>-<YYYY-MM-DD>-<archive_id 前 12 位>.zip`。
+
+    构建侧与同步侧（pull 解信封后重建包名）共用，两处不得各写一份。
+    """
+    return f"{_slug(project_id)}-{created_at[:10]}-{archive_id[:12]}.zip"
+
+
 def compute_archive_id(files: list[dict]) -> str:
     digest = hashlib.sha256()
     for entry in sorted(files, key=lambda item: item["path"]):
@@ -158,7 +166,7 @@ def build_archive(
         if not check.ok:
             temp_zip.unlink(missing_ok=True)
             raise ArchiveError(check.issues)
-        final = out_dir / f"{_slug(project_id)}-{created_at[:10]}-{archive_id[:12]}.zip"
+        final = out_dir / canonical_zip_name(project_id, created_at, archive_id)
         try:
             os.replace(temp_zip, final)
         except OSError:

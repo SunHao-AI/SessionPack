@@ -526,6 +526,8 @@ def test_pull_encrypt_mixed_zip_spk_first_wins(memory_tree, tmp_path):
     """同 archive_id 的明文与信封并存（迁移中间态）：先导入者赢，另一个跳过。"""
     src, share, built = _encrypt_share(memory_tree, tmp_path)
     sync.push_archives(src, share)           # 明文也放进去
+    suffixes = [p.suffix for p in sync._scan_sync_candidates(share)]
+    assert suffixes == [".zip"] * len(built) + [".spk"] * len(built)
     dst, conn = _pull_target(tmp_path)
     result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
     assert result.pulled == len(built)               # zip 在候选中排先，先导
@@ -542,4 +544,29 @@ def test_pull_plain_mode_ignores_envelopes(memory_tree, tmp_path):
     assert result.skipped_existing == 0
     assert not result.skipped_invalid
     assert not result.errors
+    conn.close()
+
+
+def test_pull_encrypt_read_failure_goes_to_errors(memory_tree, tmp_path,
+                                                 monkeypatch):
+    """信封读不动（IO 故障）：入 errors 且脱敏，不中止整轮，其余照常导入。"""
+    _, share, built = _encrypt_share(memory_tree, tmp_path)
+    broken = sorted(share.glob("*.spk"))[0]
+    real_read = Path.read_bytes
+
+    def boom(self):
+        if self.name == broken.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    dst, conn = _pull_target(tmp_path)
+    result = sync.pull_archives(dst, share, conn, encrypt=True, passphrase=PW)
+    assert result.pulled == len(built) - 1
+    assert not result.skipped_invalid
+    assert len(result.errors) == 1
+    assert broken.name in result.errors[0]
+    joined = " ".join(result.errors)
+    assert str(tmp_path) not in joined and "C:\\Users" not in joined
+    assert len(list(dst.glob("*.zip"))) == len(built) - 1
     conn.close()

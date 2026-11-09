@@ -5,6 +5,7 @@ from sessionpack.archive.build import (
     MANIFEST_NAME,
     ArchiveResult,
     build_archive,
+    canonical_zip_name,
     compute_archive_id,
 )
 from sessionpack.archive.install import ArchiveImportResult, import_archive
@@ -22,6 +23,6 @@ from sessionpack.archive.verify import (
 __all__ = [
     "FORMAT_NAME", "FORMAT_VERSION", "MANIFEST_NAME",
     "ArchiveResult", "VerifyIssue", "VerifyResult", "ArchiveImportResult",
-    "ArchiveError", "compute_archive_id", "build_archive",
+    "ArchiveError", "canonical_zip_name", "compute_archive_id", "build_archive",
     "verify_archive", "import_archive",
 ]
