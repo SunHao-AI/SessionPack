@@ -14,7 +14,12 @@ import zipfile
 from pathlib import Path
 
 # 同包互导私有工具函数属 lint_imports 豁免（E_PRIVATE 同包豁免）
-from sessionpack.archive.build import MANIFEST_NAME, _sha256_bytes, _slug, compute_archive_id
+from sessionpack.archive.build import (
+    MANIFEST_NAME,
+    _sha256_bytes,
+    canonical_zip_name,
+    compute_archive_id,
+)
 from sessionpack.archive.verify import ArchiveError, verify_archive
 
 
@@ -97,8 +102,8 @@ def repak_excluding_session(src: Path, session_id: str, dest_dir: Path) -> Path:
             raise ArchiveError(recheck.issues)
         # 日期段沿用原包 created_at：本机改名只由 archive_id 段体现
         # project_id / created_at 已在函数开头校验取值，此处直接复用
-        final = dest_dir / (f"{_slug(project_id)}"
-                            f"-{created_at[:10]}-{archive_id[:12]}.zip")
+        final = dest_dir / canonical_zip_name(project_id, created_at,
+                                              archive_id)
         os.replace(temp, final)
     finally:
         # 写包/自检/改名任一步失败都清临时文件（对称 sync._atomic_copy，M-1）；

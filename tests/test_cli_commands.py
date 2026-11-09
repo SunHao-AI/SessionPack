@@ -16,6 +16,7 @@ from sessionpack.cli.write_cmds import (
     run_pull,
     run_push,
     run_rebuild,
+    run_reencrypt,
 )
 from sessionpack.model import MessageRecord, ProjectRecord
 
@@ -300,6 +301,56 @@ def test_pull_plain_dir_ignores_env_var(tmp_path, monkeypatch, memory_tree):
         p.unlink()
     assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
     assert list((data_b / "archives").glob("*.zip"))
+
+
+def test_pull_nonstandard_spk_does_not_trigger_passphrase(tmp_path, monkeypatch,
+                                                          memory_tree):
+    """非规范名 .spk（非 spk-<32hex>.spk）不触发口令采集，明文 pull 照常（Spec 14 修复③）。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0   # 明文推送
+    (share / "notes.spk").write_bytes(b"not an envelope")
+    monkeypatch.delenv("SESSIONPACK_PASSPHRASE", raising=False)
+    monkeypatch.setattr("sessionpack.cli.write_cmds.getpass.getpass",
+                        lambda prompt="": "")          # 一旦误采集口令 → 退出码 2
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--data-dir", str(data_b),
+                 "--memory-root", str(memory_tree)]) == 0
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    assert main(["pull", "--dir", str(share), "--data-dir", str(data_b)]) == 0
+    assert list((data_b / "archives").glob("*.zip"))
+
+
+def test_run_reencrypt_unlink_failure_text(tmp_path, monkeypatch,
+                                           memory_tree):
+    """信封 os.replace 就位后原 zip 删除失败：记 errors 且注明信封已就位，不吞栈。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    plain = sorted(p for p in share.glob("*.zip")
+                   if not p.name.startswith("."))
+    assert plain
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    real_unlink = Path.unlink
+
+    def boom(self, *args, **kwargs):
+        if self.suffix == ".zip":
+            raise OSError("原包被占用")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    res = run_reencrypt(_ns(data_dir=str(data_dir), dir=str(share),
+                            json=False))
+    assert res.exit_code == 1
+    assert len(res.data["errors"]) == 1
+    assert "信封已就位，原明文包删除失败" in res.data["errors"][0]
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert list(share.glob("spk-*.spk"))               # 信封已就位
+    assert sorted(p for p in share.glob("*.zip")
+                  if not p.name.startswith(".")) == plain  # 原包保留可重试
 
 
 def test_run_pull_requires_existing_dir(tmp_path: Path) -> None:

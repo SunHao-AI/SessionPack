@@ -531,3 +531,16 @@ def test_cli_purge_encrypt_hint(tmp_path, monkeypatch):
     assert res.data["sync_encrypt_unscanned"] is False
     assert len(res.data["sync_stale"]) == 1
     assert res.data["sync_stale"][0].startswith("spk-")
+
+
+def test_cli_purge_encrypt_hint_empty_env_counts_as_absent(tmp_path,
+                                                           monkeypatch):
+    """SESSIONPACK_PASSPHRASE="" 视同未给口令，须照常出加密未扫描提示。"""
+    root, lay, share = _purge_with_envelope(tmp_path, name="empty-env")
+    config.set_sync_dir(root, share)
+    config.set_sync_encrypt(root, True)
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "")
+    res = _purge_cli(root, SID)
+    assert res.exit_code == 0
+    assert res.data["sync_stale"] == []
+    assert res.data["sync_encrypt_unscanned"] is True

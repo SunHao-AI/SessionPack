@@ -227,8 +227,10 @@ def run_pull(args) -> CommandResult:
         return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
     if not target.is_dir():
         return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
-    # 自适应：目录无 .spk 则完全不触碰口令（D4/D7）
-    envelopes = [p for p in target.glob("*.spk") if not p.name.startswith(".")]
+    # 自适应：目录无信封则完全不触碰口令（D4/D7）；判定与 sync/crypto 同源
+    envelopes = [p for p in target.glob(f"*{crypto.NAME_SUFFIX}")
+                 if not p.name.startswith(".")
+                 and crypto.is_envelope_name(p.name)]
     passphrase = None
     if envelopes:
         passphrase = _passphrase("同步加密口令: ")
@@ -284,7 +286,7 @@ def run_reencrypt(args) -> CommandResult:
         return CommandResult(EXIT_USAGE, err_lines=_missing_dir_errors(lay))
     if not target.is_dir():
         return CommandResult(EXIT_USAGE, err_lines=[f"同步目录不存在: {target}"])
-    passphrase = _passphrase("旧明文包加密口令: ")
+    passphrase = _passphrase("同步包加密口令（迁移后 pull 需用同一口令）: ")
     if passphrase is None:
         return CommandResult(EXIT_USAGE,
                              err_lines=["已取消：加密需要口令"
@@ -321,7 +323,12 @@ def run_reencrypt(args) -> CommandResult:
             except OSError as exc:
                 errors.append(f"{src.name}: {failure_text(exc)}")
                 continue
-            src.unlink()
+            try:
+                src.unlink()
+            except OSError as exc:
+                errors.append(f"{src.name}: 信封已就位，原明文包删除失败 "
+                              f"{failure_text(exc)}")
+                continue
             converted += 1
         except (crypto.EnvelopeError, OSError) as exc:
             errors.append(f"{src.name}: {failure_text(exc)}")
@@ -427,13 +434,15 @@ def _run_purge(conn, lay, args, status: str) -> CommandResult:
     sync_stale: list[str] = []
     sync_encrypt_unscanned = False
     if sync_dir:
-        passphrase = (os.environ.get("SESSIONPACK_PASSPHRASE")
-                      if config.sync_encrypt(lay.root) else None)
+        encrypt_on = config.sync_encrypt(lay.root)
+        passphrase = ((os.environ.get("SESSIONPACK_PASSPHRASE") or None)
+                      if encrypt_on else None)
         sync_stale = sync.find_archives_with_session(
             sync_dir, args.session, passphrase=passphrase)
         # 口令宽松变体（D9：不交互）：加密开着但没给口令且目录真有信封
-        if passphrase is None and config.sync_encrypt(lay.root) \
-                and list(sync_dir.glob("*.spk")):
+        if passphrase is None and encrypt_on \
+                and any(crypto.is_envelope_name(p.name)
+                        for p in sync_dir.glob(f"*{crypto.NAME_SUFFIX}")):
             sync_encrypt_unscanned = True
     data = {"session_id": args.session, "purged": True,
             "messages_removed": messages_removed,

@@ -46,7 +46,7 @@ def _scan_zips(directory: Path) -> list[Path]:
 
 
 def _is_envelope_name(name: str) -> bool:
-    return name.startswith(crypto.NAME_PREFIX) and name.endswith(crypto.NAME_SUFFIX)
+    return crypto.is_envelope_name(name)
 
 
 def _scan_sync_candidates(directory: Path) -> list[Path]:
