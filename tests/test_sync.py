@@ -2,6 +2,8 @@ import re
 import shutil
 from pathlib import Path
 
+import pytest
+
 from sessionpack import archive, catalog, export, sync
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.cli import main
@@ -336,3 +338,90 @@ def test_two_device_sync_roundtrip(memory_tree: Path, tmp_path: Path) -> None:
     finally:
         conn_a.close()
         conn_b.close()
+
+
+# ---------------- 加密推送（Spec 14 D3） ----------------
+
+PW = "正确的马battery"
+
+
+def test_push_encrypt_writes_envelopes_only(memory_tree, tmp_path):
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert not result.errors
+    assert result.pushed == len(built)
+    envelopes = sorted(share.glob("*.spk"))
+    assert len(envelopes) == len(built)
+    assert all(n.startswith("spk-") for n in [p.name for p in envelopes])
+    assert list(share.glob("*.zip")) == []          # 密文模式不落明文
+    assert result.bytes > 0                          # 报告字节沿用明文包大小口径
+
+
+def test_push_encrypt_dedup_by_archive_id(memory_tree, tmp_path):
+    """信封名是随机的，判重只能靠解出的 archive_id。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    first_names = {p.name for p in share.glob("*.spk")}
+    again = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert again.pushed == 0
+    assert again.skipped_existing == len(built)
+    assert again.bytes == 0
+    assert {p.name for p in share.glob("*.spk")} == first_names   # 未新增文件
+
+
+def test_push_encrypt_rejects_missing_passphrase(memory_tree, tmp_path):
+    src, _ = _build_src_archives(memory_tree, tmp_path)
+    with pytest.raises(ValueError) as exc:
+        sync.push_archives(src, tmp_path / "share", encrypt=True)
+    assert "E201" in str(exc.value)
+
+
+def test_push_encrypt_skips_unverified_without_reading_id(memory_tree, tmp_path):
+    """加密模式同样先 verify：坏包不读 id、不落盘。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    (src / "broken-2026-11-06-0123456789ab.zip").write_bytes(b"not a zip")
+    share = tmp_path / "share"
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert result.pushed == len(built)
+    assert len(result.skipped_unverified) == 1
+    assert "broken-2026-11-06-0123456789ab.zip" in result.skipped_unverified[0]
+    assert len(list(share.glob("*.spk"))) == len(built)
+
+
+def test_push_encrypt_leaves_no_tmp_on_failure(memory_tree, tmp_path, monkeypatch):
+    src, _ = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+
+    def boom(*args, **kwargs):
+        raise OSError("写入失败 at C:\\Users\\secret\\x.spk")
+
+    monkeypatch.setattr(Path, "write_bytes", boom)
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert result.pushed == 0
+    assert result.errors
+    assert "C:\\Users" not in " ".join(result.errors)
+    assert "<路径>" in " ".join(result.errors)
+    assert [p.name for p in share.iterdir()] == []
+
+
+def test_push_encrypt_dry_run_writes_nothing(memory_tree, tmp_path):
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    result = sync.push_archives(src, share, dry_run=True,
+                                encrypt=True, passphrase=PW)
+    assert result.pushed == len(built)
+    assert not share.exists()
+
+
+def test_push_ignores_foreign_garbage_when_matching(memory_tree, tmp_path):
+    """同步目录里的坏信封不参与判重，也不被 push 改动。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    share.mkdir(parents=True)
+    (share / ("spk-" + "f" * 32 + ".spk")).write_bytes(b"garbage")
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert result.pushed == len(built)
+    assert not result.errors
+    assert (share / ("spk-" + "f" * 32 + ".spk")).read_bytes() == b"garbage"

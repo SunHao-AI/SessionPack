@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from sessionpack import archive
+from sessionpack import archive, crypto
 from sessionpack.textutil import failure_text
 
 _TAIL_RE = re.compile(r"-([0-9a-f]{12})\.zip$")
@@ -42,6 +43,52 @@ def _scan_zips(directory: Path) -> list[Path]:
         return []
     return sorted(p for p in directory.glob("*.zip")
                   if not p.name.startswith(_TEMP_PREFIXES))
+
+
+def _is_envelope_name(name: str) -> bool:
+    return name.startswith(crypto.NAME_PREFIX) and name.endswith(crypto.NAME_SUFFIX)
+
+
+def _scan_sync_candidates(directory: Path) -> list[Path]:
+    """同步目录候选：`*.zip` + `*.spk`，各自排序；隐藏名与临时前缀不入候选。
+
+    本机 archives/ 不用本函数（仍由 _scan_zips 只认 zip，spec §4 D7）。
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    out: list[Path] = []
+    for pattern in ("*.zip", f"*{crypto.NAME_SUFFIX}"):
+        for p in sorted(directory.glob(pattern)):
+            if p.name.startswith(".") or p.name.startswith(_TEMP_PREFIXES):
+                continue
+            out.append(p)
+    return out
+
+
+def _envelope_archive_id(path: Path, passphrase: str) -> str:
+    """解出信封内 zip 的 archive_id；全程只在内存，不落盘。"""
+    data = crypto.decrypt_envelope(path.read_bytes(), passphrase, path.name)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        manifest = json.loads(zf.read(archive.MANIFEST_NAME))
+    return manifest["archive_id"]
+
+
+def _atomic_write(tmp: Path, blob: bytes, dest: Path) -> None:
+    """字节级原子落盘：确保父目录存在，写临时名再 os.replace；
+    目标已存在视为并发先到，良性跳过（与 _atomic_copy 同口径）。"""
+    try:
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(blob)
+        os.replace(tmp, dest)
+    except (PermissionError, FileExistsError) as exc:
+        tmp.unlink(missing_ok=True)
+        if dest.exists():
+            return
+        raise exc
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def find_archives_with_session(directory: Path, session_id: str) -> list[str]:
@@ -87,16 +134,65 @@ def _atomic_copy(src: Path, dest: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def push_archives(archives_dir: Path, sync_dir: Path,
-                  dry_run: bool = False) -> SyncResult:
+def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
+                  *, encrypt: bool = False,
+                  passphrase: str | None = None) -> SyncResult:
+    """把本地包推进同步目录（只增不删，G7：源目录零改动）。
+
+    encrypt=True 时把每个包封成随机名 .spk 信封落盘，判重靠解出信封内
+    zip 的 archive_id（信封名与内容无关，无法按文件名比对）；
+    encrypt=False 时行为与历史版本逐字节一致。
+    """
+    if encrypt and not passphrase:
+        raise ValueError("E201: 加密推送需要口令")
     pushed: list[str] = []
     existing = 0
     unverified: list[str] = []
     errors: list[str] = []
     total = 0
-    local = _scan_zips(archives_dir)
-    remote_names = {p.name for p in _scan_zips(sync_dir)}
-    for src in local:
+    candidates = _scan_sync_candidates(sync_dir)
+    remote_names = {p.name for p in candidates}
+    have_ids: set[str] = set()
+    if encrypt:
+        assert passphrase is not None      # 收窄：入口已校验 E201
+        for p in candidates:
+            if not _is_envelope_name(p.name):
+                continue
+            try:
+                have_ids.add(_envelope_archive_id(p, passphrase))
+            except (crypto.EnvelopeError, OSError, ValueError, KeyError,
+                    zipfile.BadZipFile):
+                continue          # 无关或损坏信封不参与判重，也不被本命令改动
+    for src in _scan_zips(archives_dir):
+        if encrypt:
+            assert passphrase is not None      # 收窄：入口已校验 E201
+            check = archive.verify_archive(src)
+            if not check.ok or check.manifest is None:
+                codes = ", ".join(issue.code for issue in check.issues)
+                unverified.append(f"{src.name}: {codes or '无 manifest'}")
+                continue
+            if check.manifest["archive_id"] in have_ids:
+                existing += 1
+                continue
+            try:
+                size = src.stat().st_size
+            except OSError as exc:
+                errors.append(f"{src.name}: {failure_text(exc)}")
+                continue
+            if not dry_run:
+                name = crypto.new_envelope_name()
+                try:
+                    blob = crypto.encrypt_envelope(src.read_bytes(),
+                                                   passphrase, name)
+                    tmp = sync_dir / f".tmp-{name}." \
+                                     f"{os.getpid()}.{uuid.uuid4().hex[:8]}"
+                    _atomic_write(tmp, blob, sync_dir / name)
+                except (OSError, crypto.EnvelopeError) as exc:
+                    errors.append(f"{src.name}: {failure_text(exc)}")
+                    continue
+            pushed.append(src.name)
+            total += size
+            continue
         if src.name in remote_names:
             existing += 1
             continue
