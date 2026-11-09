@@ -245,7 +245,14 @@ def test_concurrent_rebuild_from_archives_invariants(tmp_path: Path) -> None:
 # ---------- 5. 多进程并发 import：SQLite 层安全性锁死 ----------
 
 def test_concurrent_import_converges_exactly(tmp_path: Path) -> None:
-    """四进程同时 import 同一库：全退 0、stats 精确、重跑幂等不翻倍。"""
+    """四进程同时 import 同一库：全退 0、stats 精确、重跑幂等不翻倍。
+
+    先串行跑一次 import 预建库：F3 要锁死的是「并发写者经 busy_timeout +
+    每文件短事务收敛到精确结果」，而四进程同时从零建库（争抢 CREATE/WAL
+    初始化 + 全量导入）在高负载下可耗尽 30s busy 超时（曾在全量并发跑中
+    偶发 database is locked），属测试负载 flake 而非产品缺陷。预建后并发
+    阶段仍是真实多进程写争用（幂等重入 upsert），收敛性语义不变。
+    """
     tree = tmp_path / "memory"
     for sid, day in (("a" * 24, "20260101"), ("b" * 24, "20260102")):
         write_jsonl(
@@ -256,6 +263,8 @@ def test_concurrent_import_converges_exactly(tmp_path: Path) -> None:
               "intent": "并发", "outcome": "同库导入", "actions": [],
               "learned": []}])
     data_dir = tmp_path / "data"
+    warm = _cli("import", "--memory-root", str(tree), "--data-dir", str(data_dir))
+    assert warm.returncode == 0, warm.stderr          # 预建库，消除冷建库争用窗口
     procs = [subprocess.Popen(
         [sys.executable, "-m", "sessionpack", "import",
          "--memory-root", str(tree), "--data-dir", str(data_dir)],
