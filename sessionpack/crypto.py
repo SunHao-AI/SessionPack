@@ -1,6 +1,6 @@
 """同步目录端到端加密（Spec 14 D1-D4）：全项目唯一允许 import cryptography 的文件。
 
-信封格式（版本 0x01，头长 48B）：
+信封格式（版本 0x01，头长 38B）：
     magic "SPKE1"(5B) | 版本 0x01(1B) | salt(16B) | iterations(uint32 大端 4B)
     | nonce(12B) | ciphertext(含 AESGCM 16B 认证 tag)
 KDF 为 PBKDF2-HMAC-SHA256；iterations 写入信封头，日后升档旧信封仍可解。
@@ -23,7 +23,11 @@ VERSION = 1
 KDF_SALT_LEN = 16
 NONCE_LEN = 12
 PBKDF2_ITERATIONS = 600_000
-_HEADER_LEN = len(MAGIC) + 1 + KDF_SALT_LEN + 4 + NONCE_LEN   # 48
+# iterations 来自信封头，属外部可控字段：设上限封死解密侧的无界 KDF 开销。
+# 上限取当前档位 600_000 的约 8 倍，够日后升档，又不至于让对端花近乎无限的时间派生密钥。
+PBKDF2_ITERATIONS_MIN = 1
+PBKDF2_ITERATIONS_MAX = 5_000_000
+_HEADER_LEN = len(MAGIC) + 1 + KDF_SALT_LEN + 4 + NONCE_LEN   # 38
 
 NAME_PREFIX = "spk-"
 NAME_SUFFIX = ".spk"
@@ -70,6 +74,8 @@ def decrypt_envelope(blob: bytes, passphrase: str, envelope_name: str) -> bytes:
         raise EnvelopeError(f"E202: 不支持的信封版本 {blob[len(MAGIC)]}")
     salt = blob[6:6 + KDF_SALT_LEN]
     iterations = int.from_bytes(blob[22:26], "big")
+    if not PBKDF2_ITERATIONS_MIN <= iterations <= PBKDF2_ITERATIONS_MAX:
+        raise EnvelopeError(f"E202: iterations 越界 {iterations}")
     nonce = blob[26:_HEADER_LEN]
     ct = blob[_HEADER_LEN:]
     key = derive_key(passphrase, salt, iterations)
