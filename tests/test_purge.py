@@ -417,6 +417,41 @@ def test_refresh_session_hashes_preserves_purged_content_hash_null(tmp_path):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# M-1 / M-4 加固回归：写包异常清理临时文件、created_at 缺失拒绝出包
+# ---------------------------------------------------------------------------
+
+def test_repak_rejects_manifest_without_created_at(tmp_path):
+    """手造缺 created_at 的包（files 未动故仍能过 verify）→ RepakError 而非畸形包名。"""
+    src = _two_session_package(tmp_path)
+    hollow = tmp_path / "hollow.zip"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(hollow, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "manifest.json":
+                payload = json.dumps(
+                    {k: v for k, v in json.loads(payload).items()
+                     if k != "created_at"}).encode("utf-8")
+            zout.writestr(info, payload)
+    with pytest.raises(RepakError):
+        repak_excluding_session(hollow, SID, tmp_path / "out")
+
+
+def test_repak_cleans_temp_on_write_failure(tmp_path, monkeypatch):
+    """改名阶段抛异常（模拟磁盘故障）：不留 .tmp-repak-* 残留，异常原样上抛。"""
+    src = _two_session_package(tmp_path)
+    out = tmp_path / "dest"    # 独立目标目录（源包在 tmp_path/"out"）
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("sessionpack.archive.repak.os.replace", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        repak_excluding_session(src, SID, out)
+    assert list(out.glob(".tmp-repak-*")) == []
+    assert list(out.glob("*.zip")) == []
+
+
 def test_old_package_install_preserves_purged_status_and_hash(tmp_path):
     """purge 后用旧包（meta 无 purged 标记）回灌：status 仍 purged、hash 仍 None。"""
     _, a = _purge_setup(tmp_path, "a")

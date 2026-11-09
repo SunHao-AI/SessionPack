@@ -57,6 +57,10 @@ def repak_excluding_session(src: Path, session_id: str, dest_dir: Path) -> Path:
                       if isinstance(project_meta, dict) else None)
         if not isinstance(project_id, str) or not project_id:
             raise RepakError("包 manifest 缺少 project.project_id，无法命名新包")
+        # 同理校验 created_at：缺失会拼出畸形包名（M-4），正常 build 必写此字段
+        created_at = manifest.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            raise RepakError("包 manifest 缺少 created_at，无法命名新包")
         card = _purged_card(json.loads(zf.read(card_name)), session_id)
         card_bytes = (json.dumps(card, ensure_ascii=False, indent=2)
                       + "\n").encode("utf-8")
@@ -83,18 +87,21 @@ def repak_excluding_session(src: Path, session_id: str, dest_dir: Path) -> Path:
                       + "\n").encode("utf-8")
     dest_dir.mkdir(parents=True, exist_ok=True)
     temp = dest_dir / f".tmp-repak-{archive_id[:12]}.zip"
-    with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, data in entries:
-            zf.writestr(name, data)
-        zf.writestr(MANIFEST_NAME, manifest_bytes)
-    recheck = verify_archive(temp)
-    if not recheck.ok:
+    try:
+        with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+            zf.writestr(MANIFEST_NAME, manifest_bytes)
+        recheck = verify_archive(temp)
+        if not recheck.ok:
+            raise ArchiveError(recheck.issues)
+        # 日期段沿用原包 created_at：本机改名只由 archive_id 段体现
+        # project_id / created_at 已在函数开头校验取值，此处直接复用
+        final = dest_dir / (f"{_slug(project_id)}"
+                            f"-{created_at[:10]}-{archive_id[:12]}.zip")
+        os.replace(temp, final)
+    finally:
+        # 写包/自检/改名任一步失败都清临时文件（对称 sync._atomic_copy，M-1）；
+        # os.replace 成功后 temp 已不存在，missing_ok 兜底
         temp.unlink(missing_ok=True)
-        raise ArchiveError(recheck.issues)
-    # 日期段沿用原包 created_at：本机改名只由 archive_id 段体现
-    # project_id 已在函数开头校验取值，此处直接复用
-    date_seg = (manifest.get("created_at") or "")[:10]
-    final = dest_dir / (f"{_slug(project_id)}"
-                        f"-{date_seg}-{archive_id[:12]}.zip")
-    os.replace(temp, final)
     return final

@@ -112,7 +112,9 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                         catalog.insert_session_tombstone(
                             conn, session_id=session_id,
                             project_id=meta["project_id"],
-                            source_kind=meta.get("source_kind") or "archive",
+                            # 兜底与 purge 落卡处一致用 "session"（M-6）：
+                            # 墓碑/purge 卡同属会话状态卡，与会话默认口径统一
+                            source_kind=meta.get("source_kind") or "session",
                             created_at=meta.get("created_at") or "",
                             updated_at=meta.get("updated_at")
                             or meta.get("created_at") or "",
