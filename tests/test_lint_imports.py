@@ -1,8 +1,10 @@
-"""lint_imports 自测：三类规则各命中 + 合规源码 0 命中 + 包内边/相对导入豁免。"""
+"""lint_imports 自测：四类规则各命中 + 合规源码 0 命中 + 包内边/相对导入豁免。"""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import lint_imports  # noqa: E402
@@ -512,3 +514,34 @@ def test_rebound_shadow_fix_does_not_hollow_route_c() -> None:
     priv = [o for o in out if "E_PRIVATE" in o]
     assert len(priv) == 1
     assert "archive" in priv[0] and "catalog" not in priv[0]
+
+
+# --- E_CRYPTO：cryptography 只许 crypto.py 用（Spec 14 D8） -------------------
+# 原 tests/test_script_lint_imports.py 合并至此（B3），统一为 lint_imports.<attr>
+# 的 sys.path 注入调用风格，用例数量不减。
+
+_SRC_CRYPTO = "from cryptography.exceptions import InvalidTag\n"
+
+
+def test_crypto_is_layer_zero() -> None:
+    assert lint_imports.LAYER_OF["crypto"] == 0
+
+
+@pytest.mark.parametrize("src", [
+    _SRC_CRYPTO,
+    "import cryptography\n",
+    "import cryptography.hazmat.x\n",
+    "from cryptography import x\n",
+])
+def test_cryptography_blocked_spellings_outside_crypto(src: str) -> None:
+    """三种 import 拼写在 crypto.py 之外一律 E_CRYPTO（含裸 import）。"""
+    out = "\n".join(lint_imports.check_source(src, "sessionpack/sync.py"))
+    assert "E_CRYPTO" in out
+
+
+def test_cryptography_allowed_only_in_crypto_layer() -> None:
+    out = "\n".join(lint_imports.check_source(_SRC_CRYPTO, "sessionpack/sync.py"))
+    assert "E_CRYPTO" in out
+
+    assert not any("E_CRYPTO" in line for line in lint_imports.check_source(
+        _SRC_CRYPTO, "sessionpack/crypto.py"))
