@@ -77,6 +77,16 @@ def sync_dir(root: Path) -> Path | None:
     return Path(raw).expanduser()
 
 
+def sync_encrypt(root: Path) -> bool:
+    """同步目录加密开关；缺失、缺段或值非 bool 都返回 False（G4：不抛异常）。"""
+    data, _ = load_config(root)
+    section = data.get("sync")
+    if not isinstance(section, dict):
+        return False
+    value = section.get("encrypt")
+    return value is True
+
+
 def _toml_value(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -161,5 +171,34 @@ def set_sync_dir(root: Path, directory: Path) -> None:
         os.replace(tmp, path)
     except OSError:
         # 目标被占等失败：清掉临时文件再上抛，不留残file（原文件未动）。
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def set_sync_encrypt(root: Path, enabled: bool) -> None:
+    """把 `[sync].encrypt` 设为布尔值；fail-closed 语义与 set_sync_dir 相同。"""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    data, fatal = _read_toml(root)
+    if fatal:
+        raise ConfigWriteError(
+            "config.toml 解析失败，已拒绝写入以免丢失现有内容；"
+            "请修复语法后重试，或手工维护 [sync] 段的 encrypt 键")
+    data = dict(data)
+    section = data.get("sync")
+    section = dict(section) if isinstance(section, dict) else {}
+    section["encrypt"] = bool(enabled)
+    data["sync"] = section
+    problems = _unfaithful(data)
+    if problems:
+        raise ConfigWriteError(
+            "config.toml 含无法保真保留的内容：" + "、".join(problems)
+            + "；已拒绝写入以免损坏你的文件，请手工维护 [sync] 段的 encrypt 键")
+    path = root / CONFIG_NAME
+    tmp = root / (CONFIG_NAME + ".tmp")
+    tmp.write_text(_dump_toml(data), encoding="utf-8")
+    try:
+        os.replace(tmp, path)
+    except OSError:
         tmp.unlink(missing_ok=True)
         raise

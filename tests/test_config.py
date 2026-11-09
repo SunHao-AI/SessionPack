@@ -172,3 +172,39 @@ def test_shape_no_warning_for_normal_missing_and_other(tmp_path: Path) -> None:
     assert config.load_config(tmp_path)[1] == []
     _keep(tmp_path, '[other]\nx = 1\n')                   # 无关段不误报
     assert config.load_config(tmp_path)[1] == []
+
+
+# ---------------- [sync].encrypt（Spec 14） ----------------
+
+def test_sync_encrypt_default_and_roundtrip(tmp_path):
+    assert config.sync_encrypt(tmp_path) is False          # 缺文件
+    config.set_sync_encrypt(tmp_path, True)
+    assert config.sync_encrypt(tmp_path) is True
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "encrypt = true" in text                        # TOML 小写字面量
+    config.set_sync_encrypt(tmp_path, False)
+    assert config.sync_encrypt(tmp_path) is False
+
+
+def test_sync_encrypt_garbage_reads_false(tmp_path):
+    (tmp_path / "config.toml").write_text('[sync]\nencrypt = "yes"\n',
+                                          encoding="utf-8")
+    assert config.sync_encrypt(tmp_path) is False          # G4：非 bool 不抛
+
+
+def test_encrypt_and_dir_coexist(tmp_path):
+    """写 encrypt 不弄丢 dir，反向亦然（共用合并写回）。"""
+    config.set_sync_dir(tmp_path, tmp_path / "share")
+    config.set_sync_encrypt(tmp_path, True)
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "[sync]" in text and text.count("[sync]") == 1
+    assert config.sync_encrypt(tmp_path) is True
+    assert config.sync_dir(tmp_path) == tmp_path / "share"
+    config.set_sync_dir(tmp_path, tmp_path / "other")
+    assert config.sync_encrypt(tmp_path) is True
+
+
+def test_set_sync_encrypt_failclosed_on_fatal(tmp_path):
+    (tmp_path / "config.toml").write_text("[sync\n", encoding="utf-8")
+    with pytest.raises(config.ConfigWriteError):
+        config.set_sync_encrypt(tmp_path, True)
