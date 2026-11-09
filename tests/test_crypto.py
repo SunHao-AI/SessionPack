@@ -86,6 +86,12 @@ def test_iterations_out_of_range_raises_e202() -> None:
         assert "E202" in str(exc.value)
 
 
+def test_iterations_boundary_constants() -> None:
+    """默认迭代数必须落在解密侧区间 [MIN, MAX] 内，否则自家信封永远解不开。"""
+    assert crypto.PBKDF2_ITERATIONS_MIN <= crypto.PBKDF2_ITERATIONS
+    assert crypto.PBKDF2_ITERATIONS <= crypto.PBKDF2_ITERATIONS_MAX
+
+
 def test_name_helpers() -> None:
     name = crypto.new_envelope_name()
     assert name.startswith("spk-") and name.endswith(".spk")

@@ -576,7 +576,7 @@ def test_two_device_encrypted_sync_roundtrip(memory_tree: Path, tmp_path: Path,
                                              monkeypatch, capsys) -> None:
     """双设备经同一加密同步目录互通有无（spec §7 端到端项）：
     A 推信封、B pull 解密导入；B 再推走同一信封链路；口令错的一方全跳过。"""
-    passphrase = "s3cret-pass"                    # A/B/C 共用同一口令常量
+    passphrase = "s3cret-pass"                    # A/B 共用；C 故意用错口令
     monkeypatch.setenv("SESSIONPACK_PASSPHRASE", passphrase)
     # 设备 A：import → export --all --archive（包落 data_dir/archives/，§2.2）
     data_a = tmp_path / "data-a"
@@ -613,7 +613,7 @@ def test_two_device_encrypted_sync_roundtrip(memory_tree: Path, tmp_path: Path,
     assert len(list(share.glob("spk-*.spk"))) == 2
     # 设备 A 回拉：同 id 判重跳过，口令一致不报错
     assert main(["pull", "--dir", str(share), "--data-dir", str(data_a)]) == 0
-    assert "已拉取" in capsys.readouterr().out
+    assert "已拉取 0 个" in capsys.readouterr().out
     # 口令错的设备 C：信封全部进 skipped_invalid，本机 archives 零落盘
     data_c = tmp_path / "data-c"
     assert main(["import", "--memory-root", str(memory_tree),

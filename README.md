@@ -8,6 +8,7 @@ Trae 会话归档与同步：本地只读会话管理（数据不出本机）。
     sessionpack serve         # 起本地 Web UI 浏览与检索
     sessionpack delete --session ID    # 软删除会话（墓碑，随归档包传播不复活；--undo 仅撤销本机；--purge --yes 物理清除本机内容，不可逆）
     sessionpack push --dir D:\share   # 把归档包导出到同步目录（--encrypt 端到端加密）
+    # 加密同步目录的口令：push/pull/reencrypt 交互输入，或设 SESSIONPACK_PASSPHRASE 环境变量（空串视为未设置）
 
 唯一运行时第三方依赖：`cryptography`（同步加密）；其余功能纯标准库。
 
