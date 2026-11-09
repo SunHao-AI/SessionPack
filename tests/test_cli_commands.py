@@ -473,6 +473,45 @@ def test_run_pull_requires_existing_dir(tmp_path: Path) -> None:
                             "跳过已存在 0，跳过无效包 0"]
 
 
+def test_run_pull_text_reports_each_counter_itemized(
+        tmp_path: Path, memory_tree: Path) -> None:
+    """B5：pull 关键文案逐项断言——拉取数/新增会话/消息/跳过已存在/跳过无效包
+    各计数在文本模式下逐字呈现（此前只断言 data 计数值，文案漂移不可见）。
+
+    文本模式无 invalid 独立退出信号（评估结论见清单 B5：pull 恒退出码 0，
+    计数行已含「跳过无效包 N」；改退出码会破坏「报告性跳过不计错误」的既有
+    语义，维持现状）。
+    """
+    data_dir = _push_built_package(tmp_path, memory_tree)   # 本机明文包 1 个
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    good = sorted(p for p in share.glob("*.zip")
+                  if not p.name.startswith("."))
+    assert len(good) == 1
+    (share / "broken-2026-11-06-0123456789ab.zip").write_bytes(b"not a zip")
+
+    data_b = tmp_path / "data-b"
+    res = run_pull(_ns(data_dir=str(data_b), dir=str(share)))
+    assert res.exit_code == 0
+    text = res.out_lines[0]
+    assert "已拉取 1 个包" in text
+    assert "新增会话 1" in text
+    assert "消息 2" in text
+    assert "跳过已存在 0" in text
+    assert "跳过无效包 1" in text
+    assert res.data is None            # 纯明文拉取无 JSON data（既有设计）
+    dst_archives = data_b / "archives"
+    assert {p.name for p in dst_archives.glob("*.zip")} == {good[0].name}
+
+    # 再拉一次：已存在计数与无效包计数同时呈现
+    again = run_pull(_ns(data_dir=str(data_b), dir=str(share)))
+    assert again.exit_code == 0
+    assert "已拉取 0 个包" in again.out_lines[0]
+    assert "跳过已存在 1" in again.out_lines[0]
+    assert "跳过无效包 1" in again.out_lines[0]
+
+
 def test_run_import_rejects_future_version_db(tmp_path: Path) -> None:
     """Spec 7 D1：库比工具新 → EXIT_ERROR + 带版本号文案，不崩栈。"""
     data_dir = _data_dir(tmp_path)
