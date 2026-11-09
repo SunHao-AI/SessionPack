@@ -450,6 +450,7 @@ def test_run_reencrypt_unlink_failure_text(tmp_path, monkeypatch,
     res = run_reencrypt(_ns(data_dir=str(data_dir), dir=str(share),
                             json=False))
     assert res.exit_code == 1
+    assert res.data["converted"] == 0        # B8：unlink 失败不计入已转换
     assert len(res.data["errors"]) == 1
     assert "信封已就位，原明文包删除失败" in res.data["errors"][0]
     monkeypatch.setattr(Path, "unlink", real_unlink)
@@ -821,6 +822,24 @@ def test_reencrypt_skips_envelopes_and_bad_verify(tmp_path, monkeypatch,
     assert not (share / good[0]).exists()            # 好包已转成信封并删除
     assert (share / "broken.zip").exists()           # 校验未通过：只跳过，原包保留
     assert len(list(share.glob("spk-*.spk"))) == 2   # 原有假信封 + 新信封
+
+
+def test_reencrypt_json_payload_four_keys(tmp_path, monkeypatch, memory_tree):
+    """B7：直调 run_reencrypt 锁死 JSON 载荷四键——sync_dir / converted /
+    skipped / errors（此前只从子进程退出码侧观察，四键结构无人守卫）。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    assert main(["push", "--dir", str(share),
+                 "--data-dir", str(data_dir)]) == 0
+    (share / "broken.zip").write_bytes(b"not a zip")
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = run_reencrypt(_ns(data_dir=str(data_dir), dir=str(share), json=True))
+    assert res.exit_code == 0
+    assert set(res.data) == {"sync_dir", "converted", "skipped", "errors"}
+    assert res.data["sync_dir"] == str(share)
+    assert res.data["converted"] == 1
+    assert len(res.data["skipped"]) == 1 and "校验未通过" in res.data["skipped"][0]
+    assert res.data["errors"] == []
 
 
 def test_reencrypt_missing_dir_usage(tmp_path, monkeypatch):

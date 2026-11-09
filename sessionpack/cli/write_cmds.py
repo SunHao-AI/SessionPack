@@ -385,7 +385,7 @@ def run_reencrypt(args) -> CommandResult:
                "skipped": skipped, "errors": errors}
     lines = [f"已转换 {converted} 个包为加密信封，"
              f"跳过 {len(skipped)}，失败 {len(errors)}"]
-    lines += [f"跳过: {item}" for item in skipped]
+    lines += [f"跳过转换的包: {item}" for item in skipped]
     lines += [f"转换失败: {item}" for item in errors]
     code = EXIT_ERROR if errors else EXIT_OK
     return CommandResult(code, out_lines=lines, data=payload)
