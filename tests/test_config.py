@@ -192,6 +192,28 @@ def test_sync_encrypt_garbage_reads_false(tmp_path):
     assert config.sync_encrypt(tmp_path) is False          # G4：非 bool 不抛
 
 
+@pytest.mark.parametrize("text", [
+    '[sync]\nencrypt = 1\n',                # 整数
+    '[sync]\nencrypt = "true"\n',           # 字符串 truthy
+    '[sync]\nencrypt = 0\n',                # 整数 falsy
+    '[sync]\nencrypt = []\n',               # 空数组（容器本身 falsy）
+    '[sync]\nencrypt = { on = true }\n',    # 内联表整体非 bool
+    '[sync]\nencrypt = [1, 2]\n',           # 数组
+    'encrypt = 1\n',                        # 顶层散键，无 [sync] 段
+    'sync = "oops"\n',                      # sync 整体非表（字符串）
+    'sync = ["a"]\n',                       # sync 整体非表（数组）
+    '[sync]\ndir = "D:\\share"\n',          # 缺 encrypt 键
+    'not = = toml\n',                       # 语法坏掉（解析失败视同空配置）
+    '[sync]\ndir = "D"\n[other]\nx = 1\n',  # 无关段干扰
+])
+def test_sync_encrypt_any_non_true_shape_is_false_without_raise(
+        tmp_path: Path, text: str) -> None:
+    """B4（G4 锁死）：任何非 True 形状 → False 且不抛——含 sync/encrypt
+    整体非表/非 bool、顶层散键、缺键、语法坏文件。"""
+    (tmp_path / "config.toml").write_text(text, encoding="utf-8")
+    assert config.sync_encrypt(tmp_path) is False
+
+
 def test_encrypt_and_dir_coexist(tmp_path):
     """写 encrypt 不弄丢 dir，反向亦然（共用合并写回）。"""
     config.set_sync_dir(tmp_path, tmp_path / "share")
