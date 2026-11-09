@@ -427,6 +427,47 @@ def test_push_ignores_foreign_garbage_when_matching(memory_tree, tmp_path):
     assert (share / ("spk-" + "f" * 32 + ".spk")).read_bytes() == b"garbage"
 
 
+def test_push_encrypt_counts_undecryptable_envelopes(memory_tree, tmp_path):
+    """B1：无法解密的信封计入 skipped_undecryptable，重推行为不变。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    share.mkdir(parents=True)
+    # 两个无法解密的规范名信封：纯垃圾 + 口令不符（他人口令加密）
+    (share / ("spk-" + "f" * 32 + ".spk")).write_bytes(b"garbage")
+    sync.push_archives(src, tmp_path / "other", encrypt=True,
+                       passphrase="另一个口令")
+    foreign = sorted((tmp_path / "other").glob("*.spk"))[0]
+    shutil.copy2(foreign, share / foreign.name)
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert result.pushed == len(built)               # 仍按本地包重推，行为不变
+    assert result.skipped_existing == 0
+    assert result.skipped_undecryptable == 2
+    assert not result.errors
+
+
+def test_push_encrypt_undecryptable_zero_when_all_readable(memory_tree, tmp_path):
+    """可解密信封场景：计数保持 0，不误报。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    first = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert first.skipped_undecryptable == 0
+    again = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert again.pushed == 0
+    assert again.skipped_existing == len(built)
+    assert again.skipped_undecryptable == 0
+
+
+def test_push_plain_mode_undecryptable_stays_zero(memory_tree, tmp_path):
+    """非加密 push 不做信封判重：即使目录有垃圾信封计数仍为 0。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    share.mkdir(parents=True)
+    (share / ("spk-" + "f" * 32 + ".spk")).write_bytes(b"garbage")
+    result = sync.push_archives(src, share)
+    assert result.pushed == len(built)
+    assert result.skipped_undecryptable == 0
+
+
 # ---------------- 加密拉取（Spec 14 D3/D6） ----------------
 
 def _pull_target(tmp_path):

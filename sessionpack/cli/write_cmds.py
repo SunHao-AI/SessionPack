@@ -188,6 +188,7 @@ def run_push(args) -> CommandResult:
         "pushed": result.pushed,
         "skipped_existing": result.skipped_existing,
         "skipped_unverified": list(result.skipped_unverified),
+        "skipped_undecryptable": result.skipped_undecryptable,
         "bytes": result.bytes,
         "errors": list(result.errors),
     }
@@ -196,7 +197,8 @@ def run_push(args) -> CommandResult:
     mode = "（加密）" if encrypt else ""
     lines = [f"{prefix}{verb} {result.pushed} 个包共 {result.bytes} 字节{mode}，"
              f"跳过已存在 {result.skipped_existing}，"
-             f"跳过未通过校验 {len(result.skipped_unverified)}"]
+             f"跳过未通过校验 {len(result.skipped_unverified)}"
+             f"，无法解密 {result.skipped_undecryptable}"]
     lines += [f"跳过未通过校验的包: {item}" for item in result.skipped_unverified]
     errors = [f"推送失败: {item}" for item in result.errors]
     if result.errors:

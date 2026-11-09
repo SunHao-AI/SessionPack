@@ -25,6 +25,8 @@ class SyncResult:
     skipped_existing: int = 0
     skipped_unverified: tuple[str, ...] = ()
     skipped_invalid: tuple[str, ...] = ()
+    # push 加密判重阶段无法解密的同步目录信封数（B1：透明化，不改重推行为）
+    skipped_undecryptable: int = 0
     sessions_added: int = 0
     messages_added: int = 0
     bytes: int = 0
@@ -170,6 +172,7 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
     candidates = _scan_sync_candidates(sync_dir)
     remote_names = {p.name for p in candidates}
     have_ids: set[str] = set()
+    undecryptable = 0
     if encrypt:
         assert passphrase is not None      # 收窄：入口已校验 E201
         for p in candidates:
@@ -179,7 +182,7 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
                 have_ids.add(_envelope_archive_id(p, passphrase))
             except (crypto.EnvelopeError, OSError, ValueError, KeyError,
                     zipfile.BadZipFile):
-                continue          # 无关或损坏信封不参与判重，也不被本命令改动
+                undecryptable += 1  # 无关或损坏信封不参与判重，也不被本命令改动
     for src in _scan_zips(archives_dir):
         if encrypt:
             assert passphrase is not None      # 收窄：入口已校验 E201
@@ -233,6 +236,7 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
         total += size
     return SyncResult(pushed=len(pushed), skipped_existing=existing,
                       skipped_unverified=tuple(unverified),
+                      skipped_undecryptable=undecryptable,
                       bytes=total, errors=tuple(errors))
 
 

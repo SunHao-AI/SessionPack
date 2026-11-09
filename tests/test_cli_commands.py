@@ -234,6 +234,26 @@ def test_push_encrypt_env_var_and_persist(tmp_path, monkeypatch, capsys,
     assert config.sync_encrypt(Path(data_dir)) is True
 
 
+def test_push_encrypt_reports_undecryptable(tmp_path, monkeypatch, memory_tree):
+    """B1：push 报告（文本 + json）透出无法解密信封数，不改重推行为。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / ("spk-" + "e" * 32 + ".spk")).write_bytes(b"garbage")
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                       encrypt=True, json=True, dry_run=False))
+    assert res.exit_code == 0
+    assert res.data["pushed"] == 1
+    assert res.data["skipped_undecryptable"] == 1
+    assert "无法解密 1" in res.out_lines[0]
+    # 再推一次：信封仍无法解密，本地包仍重推（行为不变）
+    res2 = run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                        encrypt=True, json=True, dry_run=False))
+    assert res2.exit_code == 0
+    assert res2.data["skipped_undecryptable"] == 1
+
+
 def test_push_encrypt_dry_run_env_var_no_write(tmp_path, monkeypatch, memory_tree):
     data_dir = _push_built_package(tmp_path, memory_tree)
     share = tmp_path / "share"
