@@ -305,7 +305,7 @@ def test_pull_plain_dir_ignores_env_var(tmp_path, monkeypatch, memory_tree):
 
 def test_pull_nonstandard_spk_does_not_trigger_passphrase(tmp_path, monkeypatch,
                                                           memory_tree):
-    """非规范名 .spk（非 spk-<32hex>.spk）不触发口令采集，明文 pull 照常（Spec 14 修复③）。"""
+    """非规范名 .spk（缺 `spk-` 前缀）不触发口令采集，明文 pull 照常（Spec 14 修复③）。"""
     data_dir = _push_built_package(tmp_path, memory_tree)
     share = tmp_path / "share"
     assert main(["push", "--dir", str(share),
