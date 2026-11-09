@@ -61,6 +61,9 @@ RENDER_ALLOWED_PREFIX = "sessionpack/cli/"
 RENDER_FACADE = RENDER_TARGET.rpartition(".")[0]  # sessionpack.cli
 RENDER_FACADE_ATTR = RENDER_TARGET.rpartition(".")[2]  # output
 
+E_CRYPTO = ("端到端加密原语只许 crypto.py（L0）使用；"
+            "同步层请调 sync 的信封模式，不要直接用 cryptography")
+
 # E_PRIVATE 行级豁免注释（Spec 4 §3.1）：只放行该行号上的 E_PRIVATE，
 # 不豁免 E_LAYER / E_DOM_IMPORT / E_SQL；被豁免行以 W_ALLOW_PRIVATE 警告
 # 输出，防静默滥用。属性链跨多行时报行是 ast.Attribute.lineno（首行），
@@ -387,6 +390,10 @@ def check_source(src: str, rel: str,
             else:
                 mods = [amod]
         for m in mods:
+            # ---- 加密原语守卫：cryptography 只许 crypto.py 用（Spec 14 D8）----
+            if (m == "cryptography" or m.startswith("cryptography.")) \
+                    and rel != "sessionpack/crypto.py":
+                out.append(f"{rel}:{node.lineno}: E_CRYPTO {E_CRYPTO}")
             if not m.startswith("sessionpack"):
                 continue
             if m == RENDER_TARGET or m.startswith(RENDER_TARGET + "."):
