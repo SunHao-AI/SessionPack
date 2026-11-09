@@ -6,7 +6,7 @@ import argparse
 import zipfile
 from pathlib import Path
 
-from sessionpack import archive, catalog, config
+from sessionpack import archive, catalog, config, crypto
 from sessionpack.cli import build_parser, main
 from sessionpack.cli.output import CommandResult, emit
 from sessionpack.cli.read_cmds import run_doctor, run_scan, run_verify
@@ -252,6 +252,91 @@ def test_push_encrypt_reports_undecryptable(tmp_path, monkeypatch, memory_tree):
                         encrypt=True, json=True, dry_run=False))
     assert res2.exit_code == 0
     assert res2.data["skipped_undecryptable"] == 1
+
+
+def _count_decrypts(monkeypatch):
+    """给 crypto.decrypt_envelope 挂调用计数（sync/CLI 均按属性访问）."""
+    calls = {"n": 0}
+    real = crypto.decrypt_envelope
+
+    def wrapper(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr("sessionpack.crypto.decrypt_envelope", wrapper)
+    return calls
+
+
+def test_push_encrypt_persists_envelope_cache_and_reuses(tmp_path, monkeypatch,
+                                                         memory_tree):
+    """B2：push 成功后在 data-dir 落信封清单；二次 push 命中清单零解密。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    res = run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                       encrypt=True, json=True, dry_run=False))
+    assert res.exit_code == 0 and res.data["pushed"] == 1
+    cache_file = data_dir / "envelope-cache.json"
+    assert cache_file.is_file()
+    import json as _json
+    cache = _json.loads(cache_file.read_text("utf-8"))
+    envelopes = list(share.glob("spk-*.spk"))
+    assert set(cache) == {p.name for p in envelopes}
+    calls = _count_decrypts(monkeypatch)
+    res2 = run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                        encrypt=True, json=True, dry_run=False))
+    assert res2.exit_code == 0
+    assert res2.data["pushed"] == 0
+    assert res2.data["skipped_existing"] == 1
+    assert calls["n"] == 0          # 判重全程走清单，无 PBKDF2
+
+
+def test_push_dry_run_and_plain_do_not_touch_cache(tmp_path, monkeypatch,
+                                                   memory_tree):
+    """dry-run 与非加密 push 都不落清单（缓存只随实际写入演进）。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                 encrypt=True, json=True, dry_run=True))
+    assert not (data_dir / "envelope-cache.json").exists()
+    run_push(_ns(data_dir=str(data_dir), dir=str(tmp_path / "plain"),
+                 encrypt=False, json=True, dry_run=False))
+    assert not (data_dir / "envelope-cache.json").exists()
+
+
+def test_pull_encrypt_reuses_envelope_cache(tmp_path, monkeypatch, memory_tree):
+    """B2：pull 二次幂等重跑命中清单 → 判重零解密，计数不变。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    assert main(["push", "--dir", str(share), "--encrypt",
+                 "--data-dir", str(data_dir)]) == 0
+    data_b = tmp_path / "data-b"
+    assert main(["import", "--data-dir", str(data_b),
+                 "--memory-root", str(memory_tree)]) == 0
+    for p in (data_b / "archives").glob("*.zip"):
+        p.unlink()
+    res1 = run_pull(_ns(data_dir=str(data_b), dir=str(share), json=False))
+    assert res1.exit_code == 0
+    cache_file = data_b / "envelope-cache.json"
+    assert cache_file.is_file()    # pull 同样持久化共享清单
+    calls = _count_decrypts(monkeypatch)
+    res2 = run_pull(_ns(data_dir=str(data_b), dir=str(share), json=False))
+    assert res2.exit_code == 0
+    assert calls["n"] == 0         # 二轮判重零解密
+
+
+def test_broken_envelope_cache_is_ignored(tmp_path, monkeypatch, memory_tree):
+    """清单文件损坏（手工编辑/半写）→ 静默回退无缓存路径，push 照常成功。"""
+    data_dir = _push_built_package(tmp_path, memory_tree)
+    share = tmp_path / "share"
+    monkeypatch.setenv("SESSIONPACK_PASSPHRASE", "s3cret-pass")
+    (data_dir / "envelope-cache.json").write_text("{not json", "utf-8")
+    res = run_push(_ns(data_dir=str(data_dir), dir=str(share),
+                       encrypt=True, json=True, dry_run=False))
+    assert res.exit_code == 0
+    assert res.data["pushed"] == 1
 
 
 def test_push_encrypt_dry_run_env_var_no_write(tmp_path, monkeypatch, memory_tree):

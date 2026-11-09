@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack import archive, catalog, export, sync
+from sessionpack import archive, catalog, crypto, export, sync
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.cli import main
 from sessionpack.importer import import_source
@@ -466,6 +466,170 @@ def test_push_plain_mode_undecryptable_stays_zero(memory_tree, tmp_path):
     result = sync.push_archives(src, share)
     assert result.pushed == len(built)
     assert result.skipped_undecryptable == 0
+
+
+# ---------- B2：known_ids 判重/幂等清单 ----------
+
+def _counting_decrypt(monkeypatch):
+    """给 crypto.decrypt_envelope 挂调用计数（sync 以 crypto.<attr> 属性访问，
+    patch 模块属性即可生效，无论其 import 形态）。"""
+    calls = {"n": 0}
+    real = crypto.decrypt_envelope
+
+    def wrapper(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    monkeypatch.setattr("sessionpack.crypto.decrypt_envelope", wrapper)
+    return calls
+
+
+def test_push_known_ids_hit_skips_pbkdff2_and_matches_nocache(memory_tree,
+                                                              tmp_path,
+                                                              monkeypatch):
+    """B2 性能主路径：warm 清单命中 → 判重阶段零解密，结果与无缓存完全一致。
+
+    基准说明：无缓存每次 push 对每个信封做一次 PBKDF2（默认 600k 迭代
+    约 0.2s/信封）；清单命中路径为纯内存 dict 查找，解密调用数 0。
+    """
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    first = sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    assert first.pushed == len(built)
+    known: dict[str, str] = {}
+    cold = sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                              known_ids=known)     # 首轮全量解密并回填
+    assert cold.skipped_existing == len(built)
+    assert len(known) == len(built)
+    for p in share.glob("*.spk"):               # 回填项与真实内容一致
+        aid = sync._envelope_archive_id(p, PW)
+        assert known[p.name] == aid
+    calls = _counting_decrypt(monkeypatch)
+    warm = sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                              known_ids=known)
+    assert calls["n"] == 0                       # 命中即免解密
+    assert warm == cold                          # 结果与无缓存路径完全一致
+    # 增量路径仍不被清单误伤：本地缺信封（同步目录少一个）→ 正常补推
+    (share / sorted(known)[0]).unlink()
+    after_del = sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                                   known_ids=known)
+    assert after_del.pushed == 1
+    assert calls["n"] == 0                       # 判重阶段仍零解密
+    assert len(known) == len(built)              # 剔除僵尸项后回填新信封项
+
+
+def test_push_known_ids_prunes_stale_entries(memory_tree, tmp_path):
+    """同步目录被外部清空的信封要从清单剔除，防僵尸项无界增长。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    known: dict[str, str] = {}
+    sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                       known_ids=known)
+    assert len(known) == len(built)
+    gone = sorted(known)[0]
+    (share / gone).unlink()
+    sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                       known_ids=known)
+    # 僵尸项已剔除；被删信封对应包重推为新随机名信封并回填 → 数量持平
+    assert gone not in known
+    assert len(known) == len(built)
+    assert set(known) == {p.name for p in share.glob("*.spk")}
+
+
+def test_push_known_ids_none_keeps_b1_semantics(memory_tree, tmp_path):
+    """None（既有调用方）：不缓存也不报错，B1 无法解密计数不受影响。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    share.mkdir(parents=True)
+    (share / ("spk-" + "f" * 32 + ".spk")).write_bytes(b"garbage")
+    result = sync.push_archives(src, share, encrypt=True, passphrase=PW,
+                                known_ids=None)
+    assert result.pushed == len(built)
+    assert result.skipped_undecryptable == 1
+
+
+def test_pull_known_ids_hit_skips_pbkdff2(memory_tree, tmp_path, monkeypatch):
+    """B2：pull 幂等重跑命中清单 → 零解密判 existing，计数与无缓存一致。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    # 首轮 pull：全量解密、拉包导入、回填清单
+    local = tmp_path / "local_archives"
+    conn = _fresh_conn(memory_tree)
+    known: dict[str, str] = {}
+    first = sync.pull_archives(local, share, conn, encrypt=True,
+                               passphrase=PW, known_ids=known)
+    assert first.pulled == len(built)
+    assert len(known) == len(built)
+    conn.close()
+    # 二轮 pull：清单命中 → 判重零解密，skipped_existing 与无缓存一致
+    conn = _fresh_conn(memory_tree)
+    calls = _counting_decrypt(monkeypatch)
+    again = sync.pull_archives(local, share, conn, encrypt=True,
+                               passphrase=PW, known_ids=known)
+    conn.close()
+    assert calls["n"] == 0
+    assert again.pulled == 0
+    assert again.skipped_existing == len(built)
+
+
+def test_pull_known_ids_miss_still_pulls(memory_tree, tmp_path):
+    """清单为空（换机/首拉）时走解密原路径，不漏拉。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    local = tmp_path / "local_archives"
+    conn = _fresh_conn(memory_tree)
+    known: dict[str, str] = {}
+    result = sync.pull_archives(local, share, conn, encrypt=True,
+                                passphrase=PW, known_ids=known)
+    conn.close()
+    assert result.pulled == len(built)
+    assert not result.skipped_invalid
+    assert len(known) == len(built)
+
+
+def test_pull_known_ids_prunes_stale_entries(memory_tree, tmp_path):
+    """与 push 同一份清单：pull 也剔除同步目录已不存在的信封名。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    local = tmp_path / "local_archives"
+    known: dict[str, str] = {}
+    conn = _fresh_conn(memory_tree)
+    sync.pull_archives(local, share, conn, encrypt=True, passphrase=PW,
+                       known_ids=known)
+    conn.close()
+    assert len(known) == len(built)
+    (share / sorted(known).pop()).unlink()
+    conn = _fresh_conn(memory_tree)
+    sync.pull_archives(local, share, conn, encrypt=True, passphrase=PW,
+                       known_ids=known)
+    conn.close()
+    assert len(known) == len(built) - 1
+
+
+def test_pull_known_ids_stale_after_local_wipe_still_pulls(memory_tree,
+                                                           tmp_path):
+    """本机 archives 被清空后：清单命中但本机无包 → 落回解密原路径，不漏拉。"""
+    src, built = _build_src_archives(memory_tree, tmp_path)
+    share = tmp_path / "share"
+    sync.push_archives(src, share, encrypt=True, passphrase=PW)
+    local = tmp_path / "local_archives"
+    conn = _fresh_conn(memory_tree)
+    known: dict[str, str] = {}
+    first = sync.pull_archives(local, share, conn, encrypt=True,
+                               passphrase=PW, known_ids=known)
+    conn.close()
+    assert first.pulled == len(built)
+    for p in local.glob("*.zip"):               # 模拟本机 archives 被清空
+        p.unlink()
+    conn = _fresh_conn(memory_tree)
+    again = sync.pull_archives(local, share, conn, encrypt=True,
+                               passphrase=PW, known_ids=known)
+    conn.close()
+    assert again.pulled == len(built)           # 未因陈旧清单漏拉
 
 
 # ---------------- 加密拉取（Spec 14 D3/D6） ----------------

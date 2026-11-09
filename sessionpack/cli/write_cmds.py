@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -167,6 +168,42 @@ def _passphrase(prompt: str) -> str | None:
     return first
 
 
+# B2：判重/幂等的「信封文件名→archive_id」本机清单持久化。
+# 只存文件名与 archive_id（均为公开可推知的标识），不含口令与派生材料。
+_ENVELOPE_CACHE_NAME = "envelope-cache.json"
+
+
+def _envelope_cache_path(lay) -> Path:
+    return lay.root / _ENVELOPE_CACHE_NAME
+
+
+def _load_envelope_cache(lay) -> dict[str, str]:
+    try:
+        raw = json.loads(_envelope_cache_path(lay).read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, str)}
+
+
+def _save_envelope_cache(lay, cache: dict[str, str]) -> None:
+    """原子落盘；失败只影响下次运行提速，不影响本次同步结果，静默吞掉。"""
+    path = _envelope_cache_path(lay)
+    tmp = path.with_name(f".tmp-{path.name}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(cache, ensure_ascii=False, sort_keys=True),
+                       "utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def run_push(args) -> CommandResult:
     lay = layout(args)
     target = resolve_sync_dir(args, lay)
@@ -180,8 +217,12 @@ def run_push(args) -> CommandResult:
         return CommandResult(EXIT_USAGE,
                              err_lines=["已取消：加密推送需要口令"
                                         "（两次输入为空或不一致）"])
+    cache = _load_envelope_cache(lay) if encrypt else {}
     result = sync.push_archives(lay.archives, target, dry_run=args.dry_run,
-                                encrypt=encrypt, passphrase=passphrase)
+                                encrypt=encrypt, passphrase=passphrase,
+                                known_ids=cache if encrypt else None)
+    if encrypt and not args.dry_run:
+        _save_envelope_cache(lay, cache)
     payload = {
         "sync_dir": str(target),
         "encrypt": encrypt,
@@ -241,16 +282,20 @@ def run_pull(args) -> CommandResult:
                                  err_lines=[f"同步目录含 {len(envelopes)} 个加密信封，"
                                             "需要口令（两次输入为空或不一致，"
                                             "或设置 SESSIONPACK_PASSPHRASE）"])
+    cache = _load_envelope_cache(lay) if envelopes else {}
     conn = catalog.connect(lay.catalog)
     try:
         catalog.init_schema(conn)
         result = sync.pull_archives(lay.archives, target, conn,
                                     encrypt=bool(envelopes),
-                                    passphrase=passphrase)
+                                    passphrase=passphrase,
+                                    known_ids=cache if envelopes else None)
     except (CatalogVersionError, CatalogSchemaError) as exc:
         return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
     finally:
         conn.close()
+    if envelopes:
+        _save_envelope_cache(lay, cache)
     if args.json:
         return CommandResult(EXIT_ERROR if result.errors else EXIT_OK, data={
             "sync_dir": str(target),

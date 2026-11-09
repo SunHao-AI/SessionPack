@@ -155,12 +155,21 @@ def _atomic_copy(src: Path, dest: Path) -> None:
 
 def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
                   *, encrypt: bool = False,
-                  passphrase: str | None = None) -> SyncResult:
+                  passphrase: str | None = None,
+                  known_ids: dict[str, str] | None = None) -> SyncResult:
     """把本地包推进同步目录（只增不删，G7：源目录零改动）。
 
     encrypt=True 时把每个包封成随机名 .spk 信封落盘，判重靠解出信封内
     zip 的 archive_id（信封名与内容无关，无法按文件名比对）；
     encrypt=False 时行为与历史版本逐字节一致。
+
+    known_ids（B2 判重性能）：调用方持有的「信封文件名→archive_id」本机
+    清单。archive_id 由内容 sha256 派生、与口令无关，且 push 只新增随机名
+    信封、从不就地改写既有信封，故一条 name→archive_id 一旦学到即恒成立，
+    命中可直接信任免 PBKDF2。未命中（新名/换机）回退解密并回填；同步目录已
+    不存在的信封名清出清单防僵尸项。None 时行为与无缓存完全一致，但仍回填
+    本轮解出的 id 供调用方持久化。B1 的无法解密计数语义不变（仅在未命中
+    且解密失败时计入）。
     """
     if encrypt and not passphrase:
         raise ValueError("E201: 加密推送需要口令")
@@ -178,11 +187,23 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
         for p in candidates:
             if not _is_envelope_name(p.name):
                 continue
+            cached = known_ids.get(p.name) if known_ids is not None else None
+            if cached is not None:
+                have_ids.add(cached)
+                continue
             try:
-                have_ids.add(_envelope_archive_id(p, passphrase))
+                aid = _envelope_archive_id(p, passphrase)
             except (crypto.EnvelopeError, OSError, ValueError, KeyError,
                     zipfile.BadZipFile):
                 undecryptable += 1  # 无关或损坏信封不参与判重，也不被本命令改动
+                continue
+            have_ids.add(aid)
+            if known_ids is not None:
+                known_ids[p.name] = aid
+        if known_ids is not None:      # 同步目录已不存在的信封清出清单，防僵尸项增长
+            live = {p.name for p in candidates if _is_envelope_name(p.name)}
+            for stale in [k for k in known_ids if k not in live]:
+                del known_ids[stale]
     for src in _scan_zips(archives_dir):
         if encrypt:
             assert passphrase is not None      # 收窄：入口已校验 E201
@@ -210,6 +231,8 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
                 except (OSError, crypto.EnvelopeError) as exc:
                     errors.append(f"{src.name}: {failure_text(exc)}")
                     continue
+                if known_ids is not None:      # 新推信封回填清单（B2）
+                    known_ids[name] = check.manifest["archive_id"]
             pushed.append(src.name)
             total += size
             continue
@@ -242,13 +265,20 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
 
 def pull_archives(archives_dir: Path, sync_dir: Path, conn,
                   *, encrypt: bool = False,
-                  passphrase: str | None = None) -> SyncResult:
+                  passphrase: str | None = None,
+                  known_ids: dict[str, str] | None = None) -> SyncResult:
     """把同步目录的包拉进本机 archives/ 并导入索引（只增不删，G7：源零改动）。
 
     `*.zip` 分支与历史版本逐字节一致；encrypt=True 时另解 `*.spk` 信封：
     内存解密 → 规范包名原子落盘 → verify → import，解密/结构失败一律入
     skipped_invalid（口令错与文件损坏对用户同为"不可用"，报告不区分 E201/E202，
     也避免异常文本混入本机路径）。
+
+    known_ids（B2 幂等性能）：与 push 共用的「信封文件名→archive_id」本机
+    清单。命中且本机已有同 id12 尾巴的包时直接计 skipped_existing、全程零
+    解密——与无缓存分支的判重条件（archive_id[:12] in local_ids）等价，
+    结果逐字节一致，只是免掉 PBKDF2。未命中（新名/换机）回退解密并回填；
+    同步目录已不存在的信封名清出清单防僵尸项。None 时行为与无缓存一致。
     """
     if encrypt and not passphrase:
         raise ValueError("E201: 加密拉取需要口令")
@@ -265,7 +295,12 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
     # 无 id12 尾巴的包以文件名判同，避免每轮重复复制+导入；
     # .tmp-/.build- 前缀的强杀残留不算"已存在"，可被规范包覆盖清掉
     local_names = {p.name for p in _scan_zips(archives_dir)}
-    for src in _scan_sync_candidates(sync_dir):
+    candidates = _scan_sync_candidates(sync_dir)
+    if known_ids is not None:      # 与 push 同一份清单：同步目录已不存在的信封清出，防僵尸项
+        live = {p.name for p in candidates if _is_envelope_name(p.name)}
+        for stale in [k for k in known_ids if k not in live]:
+            del known_ids[stale]
+    for src in candidates:
         if not _is_envelope_name(src.name):
             tail = _id_tail(src.name)
             if (tail and tail in local_ids) or src.name in local_names:
@@ -300,6 +335,12 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
         if not encrypt:
             continue            # 不开加密时信封视为不可见（零行为变更）
         assert passphrase is not None      # 收窄：入口已校验 E201
+        cached_id = known_ids.get(src.name) if known_ids is not None else None
+        if cached_id is not None and cached_id[:12] in local_ids:
+            # B2：清单命中且本机已有同 id12 尾巴的包才短路（与原信封分支
+            # `archive_id[:12] in local_ids` 判据一致）；对不上则落回解密原路径
+            existing += 1
+            continue
         try:
             blob = src.read_bytes()
         except OSError as exc:
@@ -316,8 +357,12 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
                 archive_id)
         except (crypto.EnvelopeError, zipfile.BadZipFile, KeyError, TypeError,
                 ValueError):
+            if known_ids is not None:
+                known_ids.pop(src.name, None)  # 清单失效（口令轮换/文件损坏）
             invalid.append(f"{src.name}: 口令错误或文件损坏")
             continue
+        if known_ids is not None:
+            known_ids[src.name] = archive_id
         if archive_id[:12] in local_ids or canon in local_names:
             existing += 1
             continue
