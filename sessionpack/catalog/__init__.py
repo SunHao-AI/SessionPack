@@ -26,6 +26,7 @@ from sessionpack.catalog.read import (
     load_import_files,
     require_catalog,
     search_messages,
+    search_sessions,
     stats,
 )
 from sessionpack.catalog.write import (
@@ -69,6 +70,7 @@ __all__ = [
     "reset_import_file",
     "save_import_file_state",
     "search_messages",
+    "search_sessions",
     "stats",
     "tokenizer_of",
     "upsert_message",

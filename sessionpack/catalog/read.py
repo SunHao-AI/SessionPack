@@ -55,6 +55,28 @@ def search_messages(
     ).fetchall()
 
 
+def search_sessions(
+    conn: sqlite3.Connection, term: str, limit: int = 50
+) -> list[sqlite3.Row]:
+    """会话级检索：标题/摘要 LIKE 匹配（墓碑对用户视图隐藏）。
+
+    与 search_messages 互补——短词与停用词场景下消息 FTS 无果，
+    但用户记往往只记得会话标题里的词。
+    """
+    term = term.strip()
+    if not term:
+        return []
+    like = _like(term)
+    return conn.execute(
+        "SELECT s.session_id, s.title, s.summary,"
+        " COALESCE(s.updated_at, s.created_at, '') AS updated"
+        " FROM sessions s WHERE s.status = 'active'"
+        " AND (s.title LIKE ? ESCAPE '\\' OR s.summary LIKE ? ESCAPE '\\')"
+        " ORDER BY updated DESC LIMIT ?",
+        (like, like, limit),
+    ).fetchall()
+
+
 def list_sessions(
     conn: sqlite3.Connection,
     project_id: str | None = None,

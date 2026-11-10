@@ -20,6 +20,7 @@ def test_catalog_facade_exports_all_public_names() -> None:
         "upsert_message",
         "refresh_session_hashes",
         "search_messages",
+        "search_sessions",
         "list_sessions",
         "get_session",
         "get_messages",

@@ -19,10 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from sessionpack import catalog
 from sessionpack.cli.read_cmds import run_search
 from sessionpack.cli.write_cmds import run_import
 from sessionpack.server import create_server
-from tests.conftest import SID_A
+from tests.conftest import SID_A, SID_B
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = REPO_ROOT / "sessionpack" / "web"
@@ -64,7 +65,7 @@ def test_run_search_hit(memory_tree: Path, tmp_path: Path) -> None:
     assert [(h["session_id"], h["message_id"]) for h in res.data["hits"]] \
         == [(SID_A, "m2")], "入口检索应与 e2e 步骤 2 的直调结果同锁"
     text = run_search(_ns(data_dir=str(data), term="校验", limit=50, json=False))
-    assert text.out_lines[0] == '命中 1 条（检索词"校验"）'
+    assert text.out_lines[0] == '消息命中 1 条（检索词"校验"）'
     assert text.out_lines[1].startswith(f"{SID_A} #m2  校验归档"), \
         f"文本行应含定位前缀+摘要: {text.out_lines}"
 
@@ -85,6 +86,57 @@ def test_run_search_boundaries(memory_tree: Path, tmp_path: Path) -> None:
     text = run_search(_ns(data_dir=str(data), term="量子隧穿", limit=50,
                           json=False))
     assert "未命中" in text.out_lines[0]
+
+
+def _set_titles(data: Path) -> None:
+    """把标题/摘要改成与夹具正文无关的受控文案，隔离会话检索的断言。"""
+    conn = catalog.connect(data / "catalog.sqlite")
+    try:
+        conn.execute("UPDATE sessions SET title='增量导入的幂等性验证',"
+                     " summary='重复执行导入不产生重复行'"
+                     " WHERE session_id=?", (SID_B,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_run_search_session_title_and_summary(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    """入口层 3b：标题/摘要命中的会话级检索（消息无果时仍能定位会话）。"""
+    data = _imported(memory_tree, tmp_path / "device")
+    _set_titles(data)
+    res = run_search(_ns(data_dir=str(data), term="幂等", limit=50, json=True))
+    assert res.exit_code == 0
+    assert res.data["count"] == 0, "标题命中不应混入消息命中"
+    assert [(h["session_id"], h["title"]) for h in res.data["session_hits"]] \
+        == [(SID_B, "增量导入的幂等性验证")]
+    sub = run_search(_ns(data_dir=str(data), term="重复行", limit=50, json=True))
+    assert [h["session_id"] for h in sub.data["session_hits"]] == [SID_B], \
+        "仅摘要含词的会话也要命中"
+    assert sub.data["session_hits"][0]["summary"] == "重复执行导入不产生重复行"
+    text = run_search(_ns(data_dir=str(data), term="幂等", limit=50, json=False))
+    assert text.out_lines[0].startswith("消息命中 0 条"), text.out_lines
+    assert any(line.startswith(f"{SID_B}  增量导入") for line in text.out_lines), \
+        text.out_lines
+
+
+def test_run_search_session_tombstone_hidden(
+    memory_tree: Path, tmp_path: Path
+) -> None:
+    """入口层 3c：墓碑会话不出现在会话命中（与消息命中同一隐藏规则）。"""
+    data = _imported(memory_tree, tmp_path / "device")
+    _set_titles(data)
+    conn = catalog.connect(data / "catalog.sqlite")
+    try:
+        assert catalog.mark_session_deleted(conn, SID_B, now="2026-03-05T10:00:00")
+        conn.commit()
+    finally:
+        conn.close()
+    res = run_search(_ns(data_dir=str(data), term="幂等", limit=50, json=True))
+    assert res.exit_code == 0 and res.data["session_hits"] == []
+    text = run_search(_ns(data_dir=str(data), term="幂等", limit=50, json=False))
+    assert "未命中任何结果" in text.out_lines[0]
 
 
 def test_run_search_limit_clamped(memory_tree: Path, tmp_path: Path) -> None:

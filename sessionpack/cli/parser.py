@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--json", action="store_true")
 
     srch = sub.add_parser("search",
-                          help="全文检索消息正文（≥3 字走 FTS，其余 LIKE）")
+                          help="检索消息正文与会话标题/摘要（消息 ≥3 字走 FTS，其余 LIKE）")
     srch.add_argument("term", help="检索词")
     srch.add_argument("--limit", type=int, default=50)
     srch.add_argument("--data-dir", default=None)

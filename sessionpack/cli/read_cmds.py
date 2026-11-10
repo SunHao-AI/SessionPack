@@ -131,6 +131,7 @@ def run_search(args) -> CommandResult:
     conn = catalog.connect(lay.catalog)
     try:
         rows = catalog.search_messages(conn, term, limit=limit)
+        sessions = catalog.search_sessions(conn, term, limit=limit)
     finally:
         conn.close()
     if args.json:
@@ -138,12 +139,19 @@ def run_search(args) -> CommandResult:
             "term": term, "limit": limit, "count": len(rows),
             "hits": [{"session_id": r["session_id"],
                       "message_id": r["message_id"], "body": r["body"]}
-                     for r in rows]})
-    if not rows:
-        return CommandResult(EXIT_OK, out_lines=[f'未命中任何消息（检索词"{term}"）'])
-    lines = [f"命中 {len(rows)} 条（检索词\"{term}\"）"]
+                     for r in rows],
+            "session_hits": [{"session_id": r["session_id"],
+                              "title": r["title"], "summary": r["summary"]}
+                             for r in sessions]})
+    if not rows and not sessions:
+        return CommandResult(EXIT_OK, out_lines=[f'未命中任何结果（检索词"{term}"）'])
+    lines = [f"消息命中 {len(rows)} 条（检索词\"{term}\"）"]
     lines += [f'{r["session_id"]} #{r["message_id"]}  {_snippet(r["body"] or "", 80)}'
               for r in rows]
+    if sessions:
+        lines.append(f"会话命中 {len(sessions)} 个（标题/摘要）")
+        lines += [f'{r["session_id"]}  {_snippet(r["title"] or r["summary"] or "", 80)}'
+                  for r in sessions]
     return CommandResult(EXIT_OK, out_lines=lines)
 
 
