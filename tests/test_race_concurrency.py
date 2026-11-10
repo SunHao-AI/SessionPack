@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionpack import archive, catalog, config, sync
+from sessionpack import archive, catalog, config, rebuild, sync
 from sessionpack.adapters import TraeMemoryAdapter
 from sessionpack.importer import import_source
 from sessionpack.paths import ensure_layout
@@ -242,8 +242,45 @@ def test_concurrent_rebuild_from_archives_invariants(tmp_path: Path) -> None:
         == (1, 1, 1)
 
 
-# ---------- 5. 多进程并发 import：SQLite 层安全性锁死 ----------
+def test_rebuild_snapshot_survives_transient_catalog_absence(
+        tmp_path: Path, monkeypatch) -> None:
+    """原库在快照瞬间被并发赢家换出：退避后照常重建，不崩栈。
 
+    赢家的换入是两次 os.replace（原库→.bak、staging→原库），两步之间原库
+    短暂不存在。旧实现此时直接 connect_readonly，抛 "unable to open
+    database file" 的 sqlite3.OperationalError 冒到栈顶（负载下偶发，败者
+    错误里不含"原索引未改动"，违反并发重建的失败契约）。用线程模拟"另一路
+    数十毫秒后把库放回"。
+    """
+    data_dir = _rebuild_tree(tmp_path)
+    layout = ensure_layout(data_dir)
+    hidden = tmp_path / "winner-bak.sqlite"
+    real_readonly = catalog.connect_readonly
+    moved: list[threading.Timer] = []
+
+    def racing_readonly(path: Path):
+        if path == layout.catalog and not moved:
+            # 只制造一次窗口：换出后 0.3s 由"赢家"把新库顶上
+            os.replace(path, hidden)
+            t = threading.Timer(0.3, lambda: os.replace(hidden, path))
+            t.start()
+            moved.append(t)
+        return real_readonly(path)
+
+    monkeypatch.setattr(catalog, "connect_readonly", racing_readonly)
+    try:
+        report = rebuild.rebuild_from_archives(layout, assume_yes=True)
+    finally:
+        for t in moved:
+            t.join(timeout=10)
+
+    assert moved, "未进入快照窗口，用例失效"
+    assert report.ok is True, report.error
+    assert (report.sessions, report.messages, report.fts_rows) == (1, 1, 1)
+    assert (data_dir / "catalog.sqlite").is_file()
+
+
+# ---------- 5. 多进程并发 import：SQLite 层安全性锁死 ----------
 def test_concurrent_import_converges_exactly(tmp_path: Path) -> None:
     """四进程同时 import 同一库：全退 0、stats 精确、重跑幂等不翻倍。
 

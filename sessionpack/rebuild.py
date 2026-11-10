@@ -63,6 +63,49 @@ def _cleanup(path: Path) -> None:
 _REPLACE_RETRIES = 5
 _REPLACE_BACKOFF_S = 0.2
 
+_SNAPSHOT_RETRIES = 5
+_SNAPSHOT_BACKOFF_S = 0.2
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """判断快照失败是否属于"他进程短时持有/瞬时缺失"，值得退避重试。"""
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return True
+    return isinstance(exc, sqlite3.OperationalError) \
+        and "unable to open" in str(exc)
+
+
+def _snapshot_catalog(src: Path, dst: Path) -> None:
+    """把原库复制到 dst；原库在并发换入窗口内瞬时缺失时有限退避重取。
+
+    赢家的换入是两次 os.replace（原库→.bak、staging→原库），两步之间原库
+    短暂不存在。此刻既不能当作"无原库"跳过（会丢 import 台账），也不该让
+    connect_readonly 的 unable to open database file 崩栈：退避等新库顶上。
+    退避耗尽仍在缺失则按"确实没有原库"处理——后续从归档全量重放，结果
+    依然正确。
+    """
+    existed = src.exists()
+    for attempt in range(_SNAPSHOT_RETRIES):
+        last = attempt == _SNAPSHOT_RETRIES - 1
+        if not src.exists():
+            if not existed or last:
+                return
+            time.sleep(_SNAPSHOT_BACKOFF_S)
+            continue
+        try:
+            # 原库只读打开确认文件合法后即关闭；此处绝不开写连接
+            ro = catalog.connect_readonly(src)
+            try:
+                ro.execute("SELECT COUNT(*) FROM sqlite_master")
+            finally:
+                ro.close()
+            shutil.copyfile(src, dst)  # WAL/SHM 不拷
+            return
+        except (OSError, sqlite3.Error) as exc:
+            if last or not _is_transient(exc):
+                raise
+            time.sleep(_SNAPSHOT_BACKOFF_S)
+
 
 def _replace_with_retry(src: Path, dst: Path) -> None:
     """os.replace 的有限退避重试。
@@ -119,15 +162,8 @@ def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
         + f".staging.{os.getpid()}.{uuid.uuid4().hex[:8]}")
     try:
         _cleanup(staging)
-        if layout.catalog.exists():
-            # 原库只读打开确认文件合法后即关闭；此处绝不开写连接
-            ro = catalog.connect_readonly(layout.catalog)
-            try:
-                ro.execute("SELECT COUNT(*) FROM sqlite_master")
-            finally:
-                ro.close()
-            shutil.copyfile(layout.catalog, staging)  # WAL/SHM 不拷
-    except OSError:
+        _snapshot_catalog(layout.catalog, staging)
+    except (OSError, sqlite3.Error):
         # 原库正被他进程持有到连复制都失败：收敛为干净失败而非崩栈。
         _discard_quietly(staging)
         return RebuildReport(
