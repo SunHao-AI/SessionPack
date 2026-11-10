@@ -205,6 +205,12 @@ def test_api_search(memory_tree: Path, tmp_path: Path) -> None:
                   f"&limit=1&limit=junk")
         assert status == 200 and len(capped["hits"]) <= 1, \
             "limit 首个值生效，非法值不致 500"
+        status, payload = _get(
+            base, "/api/search?token=s10-token&q="
+                  + urllib.parse.quote("归档包"))
+        assert status == 200 and payload["count"] == 0
+        assert [h["session_id"] for h in payload["session_hits"]] == [SID_A], \
+            "标题「实现归档包的校验流程」应命中会话检索"
     finally:
         server.shutdown()
         server.server_close()
@@ -235,6 +241,9 @@ def test_web_entry_wired() -> None:
     app = (WEB_DIR / "app.js").read_text(encoding="utf-8")
     assert 'id="hits"' in index and 'id="hit_list"' in index, \
         "首页应有消息命中区"
+    assert 'id="session_hits"' in index and 'id="session_hit_list"' in index, \
+        "首页应有会话命中区"
+    assert "renderSessionHits" in app, "app.js 应渲染会话命中"
     assert "/api/search" in app, "app.js 应调用消息级端点"
     assert 'params.get("q")' in app, "首页应从 URL 回填检索词"
     assert 'id="msg_search"' in session, "详情页应有跳回首页的检索入口"

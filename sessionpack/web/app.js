@@ -71,19 +71,41 @@
       });
       hitsBox.hidden = false;
     }
+    const sessionHitsBox = document.getElementById("session_hits");
+    const sessionHitList = document.getElementById("session_hit_list");
+    function renderSessionHits(hits) {
+      sessionHitList.replaceChildren();
+      if (!hits || hits.length === 0) {
+        sessionHitsBox.hidden = true;
+        return;
+      }
+      hits.forEach(function (hit) {
+        const item = document.createElement("li");
+        const anchor = document.createElement("a");
+        anchor.href = link("/session?id=" + encodeURIComponent(hit.session_id));
+        anchor.textContent = hit.title || hit.session_id;
+        const body = document.createElement("p");
+        body.textContent = snippet(hit.summary, 120);
+        item.appendChild(anchor);
+        item.appendChild(body);
+        sessionHitList.appendChild(item);
+      });
+      sessionHitsBox.hidden = false;
+    }
     async function loadHits() {
       const q = document.getElementById("q").value.trim();
       if (!q) return null;
-      const search = await api("/api/search?" +
+      return await api("/api/search?" +
         new URLSearchParams({ q: q, limit: "50" }).toString());
-      return search.hits;
     }
     document.getElementById("search").addEventListener("submit", async function (event) {
       event.preventDefault();
       try {
         const data = await load();
-        const hits = await loadHits();
+        const search = await loadHits();
+        const hits = search && search.hits;
         renderHits(hits);
+        renderSessionHits(search && search.session_hits);
         renderSessions(data.sessions, list, status, hits);
       } catch (error) {
         status.textContent = error.message;
@@ -93,7 +115,8 @@
       const initialQ = params.get("q");
       if (initialQ) document.getElementById("q").value = initialQ;
       const data = await load();
-      const hits = await loadHits();
+      const search = await loadHits();
+      const hits = search && search.hits;
       data.projects.forEach(function (project) {
         const option = document.createElement("option");
         option.value = project.project_id;
@@ -101,6 +124,7 @@
         select.appendChild(option);
       });
       renderHits(hits);
+      renderSessionHits(search && search.session_hits);
       renderSessions(data.sessions, list, status, hits);
     } catch (error) {
       status.textContent = error.message;

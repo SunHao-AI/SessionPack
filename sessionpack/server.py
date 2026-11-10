@@ -136,11 +136,16 @@ def create_server(
                         limit = 50
                     limit = max(1, min(limit, 500))  # 与 cli run_search 同规则
                     rows = catalog.search_messages(conn, term, limit=limit)
+                    sessions = catalog.search_sessions(conn, term, limit=limit)
                     self._json(HTTPStatus.OK, {
                         "query": term, "count": len(rows),
                         "hits": [{"session_id": r["session_id"],
                                   "message_id": r["message_id"],
-                                  "body": r["body"]} for r in rows]})
+                                  "body": r["body"]} for r in rows],
+                        "session_hits": [
+                            {"session_id": r["session_id"],
+                             "title": r["title"], "summary": r["summary"]}
+                            for r in sessions]})
                     return
                 if path.startswith("/api/sessions/") and path.endswith("/export"):
                     session_id = path.rsplit("/", 2)[-2]
