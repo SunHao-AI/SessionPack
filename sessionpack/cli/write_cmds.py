@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sessionpack import archive, catalog, config, crypto, export, importer, sync
-from sessionpack.adapters import get_adapter
+from sessionpack.adapters import get_adapter, get_export_adapter
 from sessionpack.audit import ReadAudit, ReadBoundaryError
 from sessionpack.catalog.conn import CatalogSchemaError, CatalogVersionError
 from sessionpack.cli.common import (
@@ -50,6 +50,26 @@ def run_import(args) -> CommandResult:
         return CommandResult(EXIT_OK, out_lines=[
             f"归档 {result.archive_id}：会话 {result.sessions}，"
             f"消息 {result.messages}，新增消息 {result.messages_inserted}"])
+
+    if getattr(args, "export_dir", None):
+        root = Path(args.export_dir)
+        if not root.is_dir():
+            return CommandResult(EXIT_USAGE, err_lines=[f"导出目录不存在: {root}"])
+        adapter = get_export_adapter()
+        kwargs = dict(reparse=args.reparse, retry_failed=args.retry_failed,
+                      project_filter=args.project, since=args.since, until=args.until)
+        try:
+            stats = importer.import_source(adapter, root, lay.catalog, **kwargs)
+        except (CatalogVersionError, CatalogSchemaError) as exc:
+            return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
+        except sqlite3.Error as exc:
+            return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
+        if args.json:
+            return CommandResult(EXIT_OK, data=stats.as_dict())
+        return CommandResult(EXIT_OK, out_lines=[
+            f"导入完成：文件 {stats.files_processed}/{stats.files_declared}，"
+            f"会话 {stats.sessions_created}，消息 {stats.messages_inserted}，"
+            f"失败 {stats.rows_failed} 行，用时 {stats.elapsed_s:.2f}s"])
 
     root = memory_root(args)
     if not root.is_dir():

@@ -5,6 +5,7 @@ Trae 会话归档与同步：本地只读会话管理（数据不出本机）。
 ## 使用
 
     sessionpack import        # 导入本机 Trae 记忆目录，建本地索引
+    sessionpack import --export-dir D:\trae-exports   # 导入 Trae 官方导出的对话（.md / 分享链接文本）
     sessionpack serve         # 起本地 Web UI 浏览与检索
     sessionpack delete --session ID    # 软删除会话（墓碑，随归档包传播不复活；--undo 仅撤销本机；--purge --yes 物理清除本机内容，不可逆）
     sessionpack push --dir D:\share   # 把归档包导出到同步目录（--encrypt 端到端加密）

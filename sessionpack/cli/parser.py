@@ -22,10 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--memory-root", default=None)
     scan.add_argument("--json", action="store_true")
 
-    imp = sub.add_parser("import", help="导入记忆目录或归档包")
+    imp = sub.add_parser("import", help="导入记忆目录、归档包或官方导出")
     imp.add_argument("--memory-root", default=None)
     imp.add_argument("--data-dir", default=None)
     imp.add_argument("--archive", default=None)
+    imp.add_argument("--export-dir", default=None,
+                     help="导入 Trae 官方导出的对话目录（.md / 分享链接文本）")
     imp.add_argument("--project", default=None)
     imp.add_argument("--since", default=None)
     imp.add_argument("--until", default=None)
