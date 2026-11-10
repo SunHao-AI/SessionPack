@@ -24,3 +24,6 @@ build/
 # 本地配置与凭据
 .env
 *.local
+
+# spike 抓取产物（含真实对话正文与图片，禁止入库）
+spike/out_shares/
