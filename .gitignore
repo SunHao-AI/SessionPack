@@ -28,3 +28,9 @@ build/
 # spike 抓取产物（含真实对话正文与图片，禁止入库）
 spike/out_shares/
 spike/out_shares_data/
+spike/share_out/
+spike/chagee_test_data/
+spike/分析并确定下一步计划.md
+
+# 调试截屏
+spike/_*.png

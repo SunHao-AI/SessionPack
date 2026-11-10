@@ -1,3 +1,14 @@
-# 每行一个 Trae 分享链接，# 开头为注释
-https://share.traecontent.cn/share/O0CLGYXXWH-R-A?enter_from=pc
-https://share.traecontent.cn/share/T6Y6BUD0YSDLQ8?enter_from=pc
+# ChageeCupDrawing 工作区会话分享链接（Computer Use UI 自动化获取）
+#
+# 实测结论（2026-11-10）：
+# 1. 入口：打开会话 → 聊天面板顶栏「⋯」(更多) → 「分享」→ 任务栏进入
+#    「选择对话」模式 → 点底部「分享链接」→ 弹窗生成 QR 后点「复制链接」，
+#    链接形如 https://share.traecontent.cn/share/<slug>?enter_from=pc
+# 2. Trae 分享后端不支持多会话聚合：「全选」+「分享链接」生成的链接仍只含
+#    当前会话（share API 返回单一 share_session_id，share_type:"all" 亦然）。
+#    覆盖全部会话必须逐个会话各生成一条链接。
+# 3. 逐会话自动化可行但脆弱：顶栏「⋯」菜单弹出后截图捕获不稳定，且「删除
+#    任务」项紧邻「分享」，盲点有风险。建议半自动：每会话点击后读剪贴板校验。
+
+# 分析一键自动校准失败原因（已验证：抓取+import 端到端通过）
+https://share.traecontent.cn/share/F42MZ6N.7H.GUD?enter_from=pc
