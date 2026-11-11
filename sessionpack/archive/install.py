@@ -25,7 +25,27 @@ class ArchiveImportResult:
     messages_inserted: int
 
 
-def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
+def _extract_bundle_images(bundle, manifest: dict, valid_ids: set[str],
+                           images_dir: Path) -> None:
+    """把包内分享图片（sessions/<id>/images/<file>）落位到 <images_dir>/<id>/。"""
+    for entry in manifest["files"]:
+        name = entry["path"]
+        parts = name.split("/")
+        if len(parts) != 4 or parts[0] != "sessions" or parts[2] != "images":
+            continue
+        sid, fname = parts[1], parts[3]
+        if sid not in valid_ids or not fname or fname == "..":
+            continue
+        dest_dir = images_dir / sid
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        (dest_dir / fname).write_bytes(bundle.read(name))
+
+
+def import_archive(
+    conn: sqlite3.Connection,
+    path: Path,
+    images_dir: Path | None = None,
+) -> ArchiveImportResult:
     path = Path(path)
     result = verify_archive(path)
     if not result.ok or result.manifest is None:
@@ -79,6 +99,7 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
     try:
         sessions = messages = created = inserted = 0
         touched: set[str] = set()
+        valid_ids = {meta["session_id"] for _, meta in metas}
         with zipfile.ZipFile(path) as bundle:
             for name, meta in metas:
                 current = name
@@ -153,6 +174,8 @@ def import_archive(conn: sqlite3.Connection, path: Path) -> ArchiveImportResult:
                     inserted += int(outcome.inserted)
                     created += int(outcome.session_created)
                     messages += 1
+            if images_dir is not None:
+                _extract_bundle_images(bundle, manifest, valid_ids, images_dir)
         if touched:
             catalog.refresh_session_hashes(conn, touched)
         catalog.finish_import_run(

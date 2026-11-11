@@ -71,6 +71,7 @@ def build_archive(
     project_id: str,
     *,
     now: str | None = None,
+    images_dir: Path | None = None,
 ) -> ArchiveResult:
     from sessionpack.archive.verify import ArchiveError, verify_archive
 
@@ -135,6 +136,33 @@ def build_archive(
                     "sha256": _sha256_file(path),
                     "size": path.stat().st_size,
                 })
+            # 分享图片随包：meta_json.images 引用 <session_id>/<file>，
+            # 字节在 <images_dir>/<session_id>/<file>，打包进 sessions/<id>/images/
+            if images_dir is not None:
+                for row in messages:
+                    try:
+                        msg_meta = json.loads(row["meta_json"] or "{}")
+                    except ValueError:
+                        continue
+                    refs = msg_meta.get("images") if isinstance(msg_meta, dict) else None
+                    if not isinstance(refs, list):
+                        continue
+                    for ref in refs:
+                        if not isinstance(ref, str) or "/" not in ref:
+                            continue
+                        src = images_dir / ref
+                        if not src.is_file():
+                            continue
+                        dest = session_dir / "images" / ref.rsplit("/", 1)[-1]
+                        if dest.exists():
+                            continue
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(src, dest)
+                        entries.append({
+                            "path": dest.relative_to(work).as_posix(),
+                            "sha256": _sha256_file(dest),
+                            "size": dest.stat().st_size,
+                        })
         archive_id = compute_archive_id(entries)
         files: list[dict] = sorted(entries, key=lambda item: item["path"])
         manifest = {

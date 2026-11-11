@@ -37,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--audit", action="store_true")
     imp.add_argument("--json", action="store_true")
 
+    fs = sub.add_parser(
+        "fetch-share",
+        help="抓取单会话分享链接并入库（可选功能，需 playwright）")
+    fs.add_argument("urls", nargs="+", help="分享链接，或每行一条链接的文本文件")
+    fs.add_argument("--export-dir", default=None,
+                    help="抓取产物目录（缺省 <data-dir>/share）")
+    fs.add_argument("--data-dir", default=None)
+    fs.add_argument("--force", action="store_true",
+                    help="已抓过的链接重新抓取")
+    fs.add_argument("--json", action="store_true")
+
     serve = sub.add_parser("serve", help="启动本地 Web UI")
     serve.add_argument("--memory-root", default=None)
     serve.add_argument("--data-dir", default=None)

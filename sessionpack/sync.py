@@ -266,7 +266,8 @@ def push_archives(archives_dir: Path, sync_dir: Path, dry_run: bool = False,
 def pull_archives(archives_dir: Path, sync_dir: Path, conn,
                   *, encrypt: bool = False,
                   passphrase: str | None = None,
-                  known_ids: dict[str, str] | None = None) -> SyncResult:
+                  known_ids: dict[str, str] | None = None,
+                  images_dir: Path | None = None) -> SyncResult:
     """把同步目录的包拉进本机 archives/ 并导入索引（只增不删，G7：源零改动）。
 
     `*.zip` 分支与历史版本逐字节一致；encrypt=True 时另解 `*.spk` 信封：
@@ -319,7 +320,8 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
                 errors.append(f"{src.name}: {failure_text(exc)}")
                 continue
             try:
-                imported = archive.import_archive(conn, dest)
+                imported = archive.import_archive(conn, dest,
+                                                  images_dir=images_dir)
             except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
                 errors.append(f"{src.name}: 已复制但导入失败 "
                               f"{failure_text(exc)}")
@@ -381,7 +383,7 @@ def pull_archives(archives_dir: Path, sync_dir: Path, conn,
                            f"{', '.join(i.code for i in check.issues)}")
             continue
         try:
-            imported = archive.import_archive(conn, dest)
+            imported = archive.import_archive(conn, dest, images_dir=images_dir)
         except (archive.ArchiveError, OSError, sqlite3.Error) as exc:
             errors.append(f"{src.name}: 已落盘但导入失败 "
                           f"{failure_text(exc)}")

@@ -355,3 +355,111 @@ def test_failure_text_keeps_plain_message(tmp_path: Path) -> None:
     probe = tmp_path / "probe.sqlite"
     leaked = failure_text(ValueError(f"bad value at {probe}"))
     assert "<路径>" in leaked and str(probe).lower() not in leaked.lower()
+
+
+def _add_share_message(conn) -> None:
+    """给 SID 会话追加一条带分享图片引用的消息（模拟 share 导入产物）。"""
+    from sessionpack.model import MessageRecord
+
+    catalog.upsert_message(conn, MessageRecord(
+        session_id=SID,
+        message_id="b" * 24,
+        seq=99,
+        ts=None,
+        intent=None,
+        outcome=None,
+        actions=(),
+        learned=(),
+        meta={"role": "user", "slug": "abc123", "images": [f"{SID}/x.png"]},
+        body="看图",
+        project_id="-d-Work-RepoA",
+        source_kind="trae-export",
+    ))
+    conn.commit()
+
+
+def test_archive_roundtrip_with_images(filled_db: Path, tmp_path: Path) -> None:
+    from sessionpack.share_images import resolve_image
+
+    conn = catalog.connect(filled_db)
+    _add_share_message(conn)
+    src_images = tmp_path / "src-images"
+    (src_images / SID).mkdir(parents=True)
+    (src_images / SID / "x.png").write_bytes(b"PNGDATA")
+    built = archive.build_archive(conn, tmp_path / "a", "-d-Work-RepoA",
+                                  images_dir=src_images)
+    assert archive.verify_archive(built.path).ok is True
+    with zipfile.ZipFile(built.path) as zf:
+        assert f"sessions/{SID}/images/x.png" in zf.namelist()
+    fresh = catalog.connect(tmp_path / "fresh.sqlite")
+    catalog.init_schema(fresh)
+    dst_images = tmp_path / "dst-images"
+    archive.import_archive(fresh, built.path, images_dir=dst_images)
+    assert (dst_images / SID / "x.png").read_bytes() == b"PNGDATA"
+    row = fresh.execute(
+        "SELECT meta_json FROM messages WHERE message_id=?", ("b" * 24,)
+    ).fetchone()
+    assert json.loads(row["meta_json"])["images"] == [f"{SID}/x.png"]
+    assert resolve_image(dst_images, f"{SID}/x.png") == (
+        dst_images / SID / "x.png").resolve()
+
+
+def test_build_archive_missing_image_and_id_changes(
+    filled_db: Path, tmp_path: Path
+) -> None:
+    conn = catalog.connect(filled_db)
+    _add_share_message(conn)
+    empty = tmp_path / "empty-images"
+    empty.mkdir()
+    bare = archive.build_archive(conn, tmp_path / "a1", "-d-Work-RepoA",
+                                 images_dir=empty)
+    assert archive.verify_archive(bare.path).ok is True
+    src_images = tmp_path / "src-images"
+    (src_images / SID).mkdir(parents=True)
+    (src_images / SID / "x.png").write_bytes(b"PNGDATA")
+    withimg = archive.build_archive(conn, tmp_path / "a2", "-d-Work-RepoA",
+                                    images_dir=src_images)
+    assert withimg.archive_id != bare.archive_id
+
+
+def test_resolve_image_rejects_hostile_paths(tmp_path: Path) -> None:
+    from sessionpack.share_images import resolve_image
+
+    root = tmp_path / "images"
+    (root / SID).mkdir(parents=True)
+    (root / SID / "x.png").write_bytes(b"1")
+    assert resolve_image(root, f"{SID}/x.png") is not None
+    assert resolve_image(root, "z" * 24 + "/x.png") is None  # 非法 session_id
+    assert resolve_image(root, SID) is None  # 缺文件名段
+    assert resolve_image(root, f"{SID}/sub/x.png") is None  # 段数超限
+    assert resolve_image(root, f"{SID}/../x.png") is None  # 路径穿越
+    assert resolve_image(root, f"{SID}/.hidden") is None  # 隐藏文件名
+    assert resolve_image(root, f"{SID}/missing.png") is None  # 文件不存在
+
+
+def test_link_share_images_copies_and_is_idempotent(tmp_path: Path) -> None:
+    from sessionpack.model import MessageRecord
+    from sessionpack.share_images import link_share_images
+
+    db = tmp_path / "catalog.sqlite"
+    conn = catalog.connect(db)
+    catalog.init_schema(conn)
+    catalog.upsert_message(conn, MessageRecord(
+        session_id=SID, message_id="b" * 24, seq=1, ts=None, intent=None,
+        outcome=None, actions=(), learned=(),
+        meta={"role": "user", "slug": "abc123", "images": [f"{SID}/x.png"]},
+        body="看图", project_id="trae-share", source_kind="trae-export"))
+    conn.commit()
+    conn.close()
+    export_root = tmp_path / "export"
+    (export_root / "images" / "abc123").mkdir(parents=True)
+    (export_root / "images" / "abc123" / "x.png").write_bytes(b"DATA")
+    dest = tmp_path / "images" / SID / "x.png"
+    assert link_share_images(db, export_root) == 1
+    assert dest.read_bytes() == b"DATA"
+    # 幂等：大小相同则跳过
+    assert link_share_images(db, export_root) == 1
+    # 大小不一致则重新覆盖
+    dest.write_bytes(b"tampered-longer")
+    assert link_share_images(db, export_root) == 1
+    assert dest.read_bytes() == b"DATA"

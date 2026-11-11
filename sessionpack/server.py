@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from sessionpack import catalog, diagnostics, export
 from sessionpack.paths import default_memory_root, ensure_layout
+from sessionpack.share_images import resolve_image
 from sessionpack.summary import build_summary
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -19,6 +20,10 @@ PAGES = {"/": "index.html", "/session": "session.html", "/diagnostics": "diagnos
 STATIC = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
+}
+IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
 }
 
 
@@ -108,6 +113,16 @@ def create_server(
             self._send(HTTPStatus.OK, (WEB_ROOT / name).read_bytes(), content_type)
 
         def _api(self, path: str, query: dict) -> None:
+            if path.startswith("/api/images/"):
+                rel = path[len("/api/images/"):]
+                target = resolve_image(catalog_path.parent / "images", rel)
+                if target is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    return
+                ctype = IMAGE_TYPES.get(target.suffix.lower(),
+                                        "application/octet-stream")
+                self._send(HTTPStatus.OK, target.read_bytes(), ctype)
+                return
             conn = catalog.connect(catalog_path)
             try:
                 if path == "/api/sessions":

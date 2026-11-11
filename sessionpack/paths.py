@@ -12,6 +12,7 @@ class Layout:
     root: Path
     catalog: Path
     archives: Path
+    images: Path
 
 
 def default_data_dir() -> Path:
@@ -34,8 +35,9 @@ def ensure_layout(root: Path) -> Layout:
         root=root,
         catalog=root / "catalog.sqlite",
         archives=root / "archives",
+        images=root / "images",
     )
-    for directory in (root, layout.archives):
+    for directory in (root, layout.archives, layout.images):
         directory.mkdir(parents=True, exist_ok=True)
     return layout
 

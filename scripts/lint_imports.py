@@ -24,8 +24,8 @@ BASELINE_FILE = Path(__file__)
 LAYER_OF: dict[str, int] = {
     "model": 0, "paths": 0, "audit": 0, "mem": 0, "summary": 0,
     "config": 0, "textutil": 0, "crypto": 0,
-    "adapters": 1,
-    "catalog": 2,
+    "adapters": 1, "fetchshare": 1,
+    "catalog": 2, "share_images": 2,
     "catalog.conn": 2, "catalog.read": 2, "catalog.write": 2,
     "archive": 3, "export": 3, "importer": 3, "sync": 3, "diagnostics": 3,
     "rebuild": 3,

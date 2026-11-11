@@ -182,6 +182,18 @@
         outcome.textContent = message.outcome || "";
         item.appendChild(head);
         item.appendChild(outcome);
+        let meta = {};
+        try { meta = JSON.parse(message.meta_json || "{}") || {}; } catch (error) { meta = {}; }
+        if (Array.isArray(meta.images)) {
+          meta.images.forEach(function (ref) {
+            if (typeof ref !== "string") return;
+            const img = document.createElement("img");
+            img.src = withToken("/api/images/" + ref.split("/").map(encodeURIComponent).join("/"));
+            img.alt = "分享图片";
+            img.style.maxWidth = "100%";
+            item.appendChild(img);
+          });
+        }
         list.appendChild(item);
       });
     } catch (error) {

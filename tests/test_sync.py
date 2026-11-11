@@ -211,7 +211,7 @@ def test_pull_error_text_sanitized(memory_tree: Path, tmp_path: Path,
     dst = tmp_path / "dst-archives"
     conn = _fresh_conn(tmp_path)
 
-    def boom(connection, path):
+    def boom(connection, path, *args, **kwargs):
         raise OSError("导入失败 at C:\\Users\\secret\\x.zip")
 
     monkeypatch.setattr(archive, "import_archive", boom)

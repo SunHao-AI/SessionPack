@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Iterator
 from datetime import datetime
@@ -207,6 +208,24 @@ class TraeExportAdapter:
             return _SHARE_DISPLAY_NAME
         return canonical_project_id
 
+    def _share_image_entries(self, path: Path) -> list[dict]:
+        """读取抓取阶段写下的旁路清单 ``images/<slug>/manifest.json``。
+
+        缺失或损坏返回空列表（完全按无图片的现状走，零回归）。
+        """
+        manifest = path.parent / "images" / path.stem / "manifest.json"
+        try:
+            raw = json.loads(manifest.read_text("utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(raw, dict):
+            return []
+        entries = raw.get("images")
+        if not isinstance(entries, list):
+            return []
+        return [e for e in entries
+                if isinstance(e, dict) and isinstance(e.get("file"), str)]
+
     def read_file(
         self, ref: SourceFile, start_offset: int = 0, start_seq: int = 0
     ) -> Iterator[tuple[int, Record | None, str | None]]:
@@ -225,6 +244,26 @@ class TraeExportAdapter:
         session_id = _sha24(
             f"{project_id}\n{title or ''}\n" + "\n".join(f"{r}:{b}" for r, b in messages)
         )
+        # share 分支：按旁路清单把图片挂到消息（匹配失败兜底最后一条）
+        share_slug = ""
+        image_refs: dict[int, list[str]] = {}
+        if fmt == "share":
+            entries = self._share_image_entries(ref.path)
+            if entries:
+                share_slug = ref.path.stem
+
+                def norm(s: str) -> str:
+                    return re.sub(r"\s+", "", s)
+
+                norm_bodies = [norm(b) for _, b in messages]
+                last_idx = len(messages) - 1
+                for entry in entries:
+                    key = norm(str(entry.get("snippet") or ""))[:40]
+                    target = next(
+                        (i for i, nb in enumerate(norm_bodies) if key and key in nb),
+                        last_idx)
+                    image_refs.setdefault(target, []).append(
+                        f"{session_id}/{entry['file']}")
         try:
             topic_time = datetime.fromtimestamp(ref.path.stat().st_mtime).strftime(
                 "%Y-%m-%d %H:%M:%S")
@@ -243,11 +282,17 @@ class TraeExportAdapter:
             ), None
             offset += 1
 
-        for role, body in messages:
+        for i, (role, body) in enumerate(messages):
             if not body:
                 continue
             seq += 1
             offset += 1
+            meta: dict = {"role": role}
+            if share_slug:
+                meta["slug"] = share_slug
+                refs = image_refs.get(i)
+                if refs:
+                    meta["images"] = refs
             yield offset, MessageRecord(
                 session_id=session_id,
                 message_id=_sha24(f"{session_id}:{seq}"),
@@ -257,7 +302,7 @@ class TraeExportAdapter:
                 outcome=None,
                 actions=(),
                 learned=(),
-                meta={"role": role},
+                meta=meta,
                 body=body,
                 project_id=project_id,
                 source_kind=self.source_kind,

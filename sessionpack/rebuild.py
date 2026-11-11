@@ -185,7 +185,8 @@ def rebuild_from_archives(layout: Layout, *, assume_yes: bool) -> RebuildReport:
         clear_derived_rows(conn)
         report = RebuildReport(ok=True)
         for bundle in archives:
-            result = archive.import_archive(conn, bundle)
+            result = archive.import_archive(conn, bundle,
+                                            images_dir=layout.images)
             report.packages.append({
                 "name": bundle.name,
                 "archive_id": result.archive_id,

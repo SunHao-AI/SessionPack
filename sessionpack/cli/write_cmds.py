@@ -37,7 +37,8 @@ def run_import(args) -> CommandResult:
         conn = catalog.connect(lay.catalog)
         try:
             catalog.init_schema(conn)
-            result = archive.import_archive(conn, Path(args.archive))
+            result = archive.import_archive(conn, Path(args.archive),
+                                            images_dir=lay.images)
         except archive.ArchiveError as exc:
             return CommandResult(EXIT_VERIFY, err_lines=[
                 "归档校验失败: " + ", ".join(issue.code for issue in exc.issues)])
@@ -133,7 +134,8 @@ def run_export(args) -> CommandResult:
                                  for row in catalog.get_projects(conn)])
             lines = []
             for project_id in project_ids:
-                item = archive.build_archive(conn, out, project_id)
+                item = archive.build_archive(conn, out, project_id,
+                                             images_dir=lay.images)
                 lines.append(f"已生成 {item.path}（archive_id {item.archive_id}，"
                              f"会话 {item.sessions}，消息 {item.messages}）")
             return CommandResult(EXIT_OK, out_lines=lines)
@@ -309,7 +311,8 @@ def run_pull(args) -> CommandResult:
         result = sync.pull_archives(lay.archives, target, conn,
                                     encrypt=bool(envelopes),
                                     passphrase=passphrase,
-                                    known_ids=cache if envelopes else None)
+                                    known_ids=cache if envelopes else None,
+                                    images_dir=lay.images)
     except (CatalogVersionError, CatalogSchemaError) as exc:
         return CommandResult(EXIT_ERROR, err_lines=[str(exc)])
     finally:
@@ -568,6 +571,45 @@ def run_delete(args) -> CommandResult:
         return CommandResult(EXIT_ERROR, err_lines=[f"数据库错误: {exc}"])
     finally:
         conn.close()
+
+
+def run_fetch_share(args) -> CommandResult:
+    lay = layout(args)
+    out = Path(args.export_dir) if getattr(args, "export_dir", None) \
+        else lay.root / "share"
+    from sessionpack import fetchshare
+    try:
+        ok, failed, skipped, pics = fetchshare.fetch_shares(
+            list(args.urls), out, force=bool(args.force))
+    except ImportError as exc:
+        return CommandResult(EXIT_ERROR, {
+            "ok": False, "fetched": 0, "failed": 0, "skipped": 0,
+            "error": "fetch-share 需要可选依赖：pip install playwright && "
+                     "playwright install chromium（"
+                     + failure_text(exc) + "）"})
+    if ok == 0:
+        return CommandResult(EXIT_ERROR, {
+            "ok": False, "fetched": 0, "failed": failed, "skipped": skipped,
+            "error": "没有抓取成功的分享链接"})
+    imp = importer.import_source(get_export_adapter(), out, lay.catalog,
+                                 reparse=False)
+    images = 0
+    if pics:
+        from sessionpack.share_images import link_share_images
+        images = link_share_images(lay.catalog, out)
+    payload = {"fetched": ok, "failed": failed, "skipped": skipped,
+               "images_fetched": pics, "images_stored": images,
+               "sessions_imported": imp.sessions,
+               "messages_imported": imp.messages,
+               "source_total": imp.source_total}
+    if imp.failed:
+        payload["warnings"] = [f"{p.name}: {err}"
+                               for p, err in list(imp.failed)[:5]]
+    return CommandResult(EXIT_OK, payload)
+
+
+def cmd_fetch_share(args) -> int:
+    return emit(run_fetch_share(args), json_mode=args.json)
 
 
 def cmd_delete(args) -> int:

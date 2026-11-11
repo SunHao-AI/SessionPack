@@ -26,6 +26,7 @@ from sessionpack.cli.read_cmds import (
 from sessionpack.cli.write_cmds import (
     cmd_delete,
     cmd_export,
+    cmd_fetch_share,
     cmd_import,
     cmd_pull,
     cmd_push,
@@ -36,6 +37,7 @@ from sessionpack.cli.write_cmds import (
 _cmd_doctor = cmd_doctor
 _cmd_scan = cmd_scan
 _cmd_import = cmd_import
+_cmd_fetch_share = cmd_fetch_share
 _cmd_serve = cmd_serve
 _cmd_export = cmd_export
 _cmd_verify = cmd_verify
@@ -58,7 +60,7 @@ __all__ = [
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handler = globals()[f"_cmd_{args.command}"]
+    handler = globals()["_cmd_" + args.command.replace("-", "_")]
     try:
         return handler(args)
     except Exception as exc:  # noqa: BLE001 与拆分前一致：最外层兜底成一行错误
